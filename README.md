@@ -191,6 +191,9 @@ The shell includes the compilers, runtime dependencies, and check tools.
 It sets `PYTHONPATH` to include `companion/src`, so `python -m navdio` works without a virtualenv.
 Start your editor from this shell.
 
+Outside Nix, Python installs require Pillow 13.0.0 or newer.
+The Nix build backports the APNG and XBM security fixes to older pinned Pillow.
+
 Treefmt uses Alejandra, gofmt, and Ruff. Use the same tools for editor formatting.
 `nix flake check` checks formatting without changing the checkout and runs ty over Python source, tests, and scripts.
 `companion/typings/mpd.pyi` describes the dynamic python-mpd2 methods used here. It does not replace the runtime dependency.

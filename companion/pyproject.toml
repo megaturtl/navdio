@@ -7,7 +7,7 @@ name = "navdio"
 version = "0.1.0"
 description = "Share your Navidrome listening session with the world"
 requires-python = ">=3.12"
-dependencies = ["python-mpd2>=3.1", "Pillow>=11"]
+dependencies = ["python-mpd2>=3.1", "Pillow>=13.0.0"]
 
 [project.scripts]
 navdio = "navdio.app:main"

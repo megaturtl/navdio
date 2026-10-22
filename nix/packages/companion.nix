@@ -1,5 +1,6 @@
 {
   lib,
+  callPackage,
   python3Packages,
   mpd,
 }:
@@ -15,9 +16,12 @@ python3Packages.buildPythonApplication {
   };
   pyproject = true;
   build-system = [python3Packages.setuptools];
-  dependencies = with python3Packages; [
-    pillow
-    python-mpd2
+  nativeBuildInputs = [python3Packages.pythonRelaxDepsHook];
+  # Pillow 12.3.0 has the two upstream security fixes backported.
+  pythonRelaxDeps = ["pillow"];
+  dependencies = [
+    (callPackage ./pillow.nix {})
+    python3Packages.python-mpd2
   ];
   makeWrapperArgs = [
     "--prefix"

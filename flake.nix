@@ -34,11 +34,12 @@
     devShells = forEachSystem (
       system: let
         pkgs = pkgsFor system;
+        pillow = pkgs.callPackage ./nix/packages/pillow.nix {};
       in {
         default = pkgs.mkShell {
           packages = [
             (pkgs.python3.withPackages (ps: [
-              ps.pillow
+              pillow
               ps.python-mpd2
               ps.setuptools
             ]))
@@ -63,8 +64,9 @@
     checks = forEachSystem (
       system: let
         pkgs = pkgsFor system;
+        pillow = pkgs.callPackage ./nix/packages/pillow.nix {};
         python = pkgs.python3.withPackages (ps: [
-          ps.pillow
+          pillow
           ps.python-mpd2
         ]);
       in {

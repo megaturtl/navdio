@@ -18,9 +18,14 @@ from .config import RadioError, json_object, library_path, reject_constant
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_COVER_BYTES = 32 * 1024
+MAX_COVER_PIXELS = 1024 * 1024
+MAX_COVER_AXIS = 2048
 MAX_SESSIONS = 256
 LIVENESS_SECONDS = 15
 PAUSED_SECONDS = 30 * 60
+
+# Set once: per-request changes would race between HTTP handlers.
+Image.MAX_IMAGE_PIXELS = MAX_COVER_PIXELS
 
 
 class EventError(RadioError):
@@ -52,16 +57,15 @@ def cover_jpeg(encoded):
         raise ValueError
     with warnings.catch_warnings():
         warnings.simplefilter("error", Image.DecompressionBombWarning)
-        with Image.open(io.BytesIO(source)) as image:
+        with Image.open(io.BytesIO(source), formats=("JPEG", "PNG", "WEBP")) as image:
             if (
-                image.format not in {"JPEG", "PNG", "WEBP"}
-                or max(image.size) > 2048
-                or image.width * image.height > 1024 * 1024
+                max(image.size) > MAX_COVER_AXIS
+                or image.width * image.height > MAX_COVER_PIXELS
                 or getattr(image, "n_frames", 1) != 1
             ):
                 raise ValueError
             image.verify()
-        with Image.open(io.BytesIO(source)) as image:
+        with Image.open(io.BytesIO(source), formats=("JPEG", "PNG", "WEBP")) as image:
             thumbnail = ImageOps.fit(
                 ImageOps.exif_transpose(image).convert("RGB"),
                 (50, 50),

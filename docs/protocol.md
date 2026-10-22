@@ -43,7 +43,8 @@ The companion uses monotonic time for deadlines and position estimates.
 
 Optional `coverArt` contains base64-encoded JPEG, PNG, or WebP data, limited to 32 KiB after decoding.
 The plugin requests size 50. The companion validates the image and converts it to a 50×50 JPEG.
-Artwork failures do not prevent valid audio playback.
+Covers must contain one frame, at most 2048 pixels per axis and 1,048,576 pixels total.
+Invalid event artwork rejects the event. Missing plugin artwork does not prevent audio playback.
 
 ## Session selection and liveness
 

@@ -1,12 +1,15 @@
 import base64
 import io
 import json
+import struct
 import tempfile
 import unittest
+import zlib
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
-from PIL import Image
+from PIL import GifImagePlugin, Image, PngImagePlugin, XbmImagePlugin
 
 from navdio.config import RadioError, library_path
 from navdio.state import EventError, Heartbeat, RadioState, parse_event
@@ -24,6 +27,21 @@ def artwork(size=(91, 63), format="PNG"):
     output = io.BytesIO()
     Image.new("RGB", size, "red").save(output, format=format)
     return base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def apng(size, *, frames=2, disposal=1):
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    source = b"\x89PNG\r\n\x1a\n"
+    source += chunk(b"IHDR", struct.pack(">IIBBBBB", *size, 8, 6, 0, 0, 0))
+    source += chunk(b"acTL", struct.pack(">II", frames, 0))
+    source += chunk(b"fcTL", struct.pack(">IIIIIHHBB", 0, 1, 1, 0, 0, 1, 10, disposal, 0))
+    source += chunk(b"IDAT", zlib.compress(b"\0\0\0\0\0"))
+    source += chunk(b"IEND", b"")
+    return base64.b64encode(source).decode("ascii")
 
 
 class StateTests(unittest.TestCase):
@@ -145,15 +163,80 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(info))
         self.assertNotIn(str(self.root), json.dumps(info))
 
+    def test_single_image_formats_produce_50_pixel_jpeg(self):
+        for format in ("JPEG", "PNG", "WEBP"):
+            with self.subTest(format=format):
+                event = self.event(coverArt=artwork(format=format))
+                with Image.open(io.BytesIO(event.track.cover)) as image:
+                    self.assertEqual(image.format, "JPEG")
+                    self.assertEqual(image.size, (50, 50))
+                    image.load()
+
+    def test_unsupported_formats_do_not_enter_their_parsers(self):
+        xbm = b""
+        for prop in (b"width", b"height", b"x_hot", b"y_hot"):
+            xbm += b"#define" + b" " * 60 + b"_" + prop + b" 1\r"
+        xbm += b"\r" * 60 + b"_bits"
+        covers = (base64.b64encode(xbm).decode("ascii"), artwork(format="GIF"))
+        with (
+            patch.object(
+                XbmImagePlugin.XbmImageFile, "_open", side_effect=AssertionError("XBM parser")
+            ) as xbm_open,
+            patch.object(
+                GifImagePlugin.GifImageFile, "_open", side_effect=AssertionError("GIF parser")
+            ) as gif_open,
+        ):
+            for cover in covers:
+                with self.subTest(cover=cover[:20]), self.assertRaises(EventError):
+                    self.event(coverArt=cover)
+            xbm_open.assert_not_called()
+            gif_open.assert_not_called()
+
+    def test_apng_rejected_before_canvas_allocation_or_decode(self):
+        for size, frames in (((1025, 1024), 1), ((2049, 1), 1), ((64, 64), 2)):
+            for disposal in (0, 1, 2):
+                with (
+                    self.subTest(size=size, frames=frames, disposal=disposal),
+                    patch.object(
+                        Image.core, "fill", side_effect=AssertionError("canvas allocation")
+                    ) as fill,
+                    patch.object(
+                        PngImagePlugin.PngImageFile,
+                        "load",
+                        side_effect=AssertionError("image decode"),
+                    ) as load,
+                    self.assertRaises(EventError),
+                ):
+                    self.event(coverArt=apng(size, frames=frames, disposal=disposal))
+                fill.assert_not_called()
+                load.assert_not_called()
+
     def test_malformed_cover_cannot_mutate_existing_state(self):
         self.state.accept(self.event(coverArt=artwork()))
         self.render()
-        old = self.state.info()
-        for cover in ("not-base64", "", artwork((2049, 1)), artwork(format="GIF")):
+        old = self.state.info(), self.state.cover(), self.state.desired(), self.state.revision
+        covers = (
+            "not-base64",
+            "",
+            artwork((2049, 1)),
+            artwork(format="GIF"),
+            apng((1025, 1024)),
+            apng((2049, 1)),
+            apng((64, 64)),
+        )
+        for cover in covers:
             with self.subTest(cover=cover[:20]):
                 with self.assertRaises(EventError):
                     self.state.accept(self.event(timestamp=2000, coverArt=cover))
-                self.assertEqual(self.state.info(), old)
+                self.assertEqual(
+                    (
+                        self.state.info(),
+                        self.state.cover(),
+                        self.state.desired(),
+                        self.state.revision,
+                    ),
+                    old,
+                )
 
     def test_null_artists_fall_back_and_starting_is_silent(self):
         payload = self.payload(state="starting", playbackRate=1)
