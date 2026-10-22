@@ -3,6 +3,7 @@
 import http.client
 import json
 import logging
+import os
 import secrets
 import socket
 import threading
@@ -10,11 +11,41 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
-from .config import Config
+from .config import Config, RadioError
 from .state import MAX_BODY_BYTES, EventError, RadioState, parse_event
 
 IO_TIMEOUT = 5
 LOGGER = logging.getLogger(__name__)
+
+
+def inherited_listener(config: Config) -> socket.socket:
+    activation = {
+        name: os.environ.pop(name, None) for name in ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES")
+    }
+    listener = None
+    try:
+        if activation["LISTEN_PID"] != str(os.getpid()) or activation["LISTEN_FDS"] != "1":
+            raise ValueError
+        os.set_inheritable(3, False)
+        listener = socket.socket(fileno=3)
+        family = socket.AF_INET6 if ":" in config.listen_address else socket.AF_INET
+        if (
+            listener.family != family
+            or listener.type != socket.SOCK_STREAM
+            or not listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+        ):
+            raise ValueError
+        address = listener.getsockname()
+        if address[1] != config.port or socket.inet_pton(family, address[0]) != socket.inet_pton(
+            family, config.listen_address
+        ):
+            raise ValueError
+        listener.setblocking(True)
+        return listener
+    except (OSError, ValueError):
+        if listener is not None:
+            listener.close()
+        raise RadioError("Invalid companion socket activation") from None
 
 
 class RadioServer(ThreadingMixIn, HTTPServer):
@@ -22,7 +53,7 @@ class RadioServer(ThreadingMixIn, HTTPServer):
     block_on_close = True
     request_queue_size = 32
 
-    def __init__(self, config: Config, state: RadioState):
+    def __init__(self, config: Config, state: RadioState, listener: socket.socket):
         self.config = config
         self.state = state
         self.listener_slots = threading.BoundedSemaphore(config.max_listeners)
@@ -31,9 +62,13 @@ class RadioServer(ThreadingMixIn, HTTPServer):
         self.connections: set[socket.socket] = set()
         self.upstreams: set[http.client.HTTPConnection] = set()
         self.closing = False
-        if ":" in config.listen_address:
-            self.address_family = socket.AF_INET6
-        super().__init__((config.listen_address, config.port), RadioHandler)
+        self.address_family = listener.family
+        super().__init__(listener.getsockname(), RadioHandler, bind_and_activate=False)
+        self.socket.close()
+        self.socket = listener
+        self.socket.set_inheritable(False)
+        self.server_name = socket.getfqdn(config.listen_address)
+        self.server_port = self.server_address[1]
 
     def get_request(self):
         connection, address = super().get_request()

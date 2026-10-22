@@ -87,15 +87,20 @@ With sops-nix, add both services to the secret's `restartUnits`.
 The module:
 
 - Installs the plugin through `services.navidrome.plugins`.
+- Reserves the companion HTTP port through `navdio.socket`, including during companion restarts.
 - Starts the companion and MPD with read-only library access.
 - Configures and enables the plugin through Navidrome's CLI before Navidrome starts.
 - Grants access only to the selected user and libraries, without library writes.
 - Sends the token through stdin, not command-line arguments.
 - Restarts Navidrome when managed plugin settings change.
 
-If provisioning fails, Navidrome can still start.
+Navidrome runs only while `navdio.socket` is active.
+Plugin provisioning can fail without stopping Navidrome while that socket remains active.
 Fix the prerequisites, then restart Navidrome to apply the plugin settings.
 The module does not create Navidrome users, change authentication, open firewall ports, or configure a public proxy.
+
+For upgrades from direct binding, stop Navidrome before enabling the socket.
+Confirm that `navdio.socket` is active before restarting Navidrome.
 
 Set `services.navdio.configurePlugin = false` to manage plugin settings and grants yourself.
 Otherwise, each Navidrome startup restores the managed values. Web UI edits to those settings do not persist.
@@ -158,7 +163,7 @@ Navidrome loads plugins asynchronously. The radio waits for a new playback repor
 Reports from before startup are not replayed.
 Navidrome's **Report Real Path** setting is not needed. The plugin sends library-relative paths.
 
-If info stays idle, check `navdio.service`, `navdio-plugin.service`, and `navidrome.service` logs.
+If info stays idle, check `navdio.socket`, `navdio.service`, `navdio-plugin.service`, and `navidrome.service` logs.
 Check the selected user, client playback-report support, library grants, and Navidrome's playback filters.
 Do not widen permissions to diagnose failures.
 
@@ -188,8 +193,14 @@ nix build .#navdio .#plugin
 ```
 
 The shell includes the compilers, runtime dependencies, and check tools.
-It sets `PYTHONPATH` to include `companion/src`, so `python -m navdio` works without a virtualenv.
-Start your editor from this shell.
+It sets `PYTHONPATH` to include `companion/src`. Start your editor from this shell.
+The companion requires a systemd listening socket. The NixOS module manages it.
+For local development, use generated test credentials:
+
+```sh
+systemd-socket-activate --listen=127.0.0.1:8750 python -m navdio --config /path/to/navdio.json
+```
+This helper does not reserve the port after the process exits. Use the NixOS module for the live plugin.
 
 Outside Nix, Python installs require Pillow 13.0.0 or newer.
 The Nix build backports the APNG and XBM security fixes to older pinned Pillow.

@@ -3,6 +3,7 @@
 `POST /_navdio/events` is private. Never expose it through a public proxy.
 Send JSON with `Authorization: Bearer <event token>`.
 The body limit is 64 KiB. Accepted events return 204. Rejected events leave playback state unchanged.
+The module reserves the listener through systemd. Navidrome requires that socket to remain active.
 
 ## Events
 

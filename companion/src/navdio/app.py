@@ -4,11 +4,12 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import threading
 
 from . import __version__
 from .config import Config, RadioError
-from .http import RadioServer
+from .http import RadioServer, inherited_listener
 from .player import Player
 from .state import RadioState
 
@@ -16,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 CONTROL_SECONDS = 0.25
 
 
-def run(config: Config, stopping: threading.Event | None = None) -> None:
+def run(config: Config, listener: socket.socket, stopping: threading.Event | None = None) -> None:
     stopping = stopping if stopping is not None else threading.Event()
     state = RadioState()
     player = Player(config)
@@ -39,9 +40,9 @@ def run(config: Config, stopping: threading.Event | None = None) -> None:
         if stopping.is_set():
             return
         try:
-            server = RadioServer(config, state)
+            server = RadioServer(config, state, listener)
         except OSError:
-            raise RadioError("Cannot bind companion HTTP server") from None
+            raise RadioError("Cannot start companion HTTP server") from None
         serving = threading.Thread(target=serve, args=(server,), name="navdio-http")
         serving.start()
         while not stopping.is_set():
@@ -78,7 +79,9 @@ def main(argv=None):
 
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
-        run(Config.load(args.config), stopping)
+        config = Config.load(args.config)
+        with inherited_listener(config) as listener:
+            run(config, listener, stopping)
     except RadioError as error:
         LOGGER.error("%s", error)
         return 1

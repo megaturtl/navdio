@@ -2,7 +2,10 @@ import base64
 import http.client
 import io
 import json
+import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -55,15 +58,18 @@ class HTTPTests(unittest.TestCase):
             target=self.source.serve_forever, kwargs={"poll_interval": 0.01}
         )
         self.source_thread.start()
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(32)
         config = Config(
             {"1": self.root},
             b"test-only-token",
-            port=0,
+            port=self.listener.getsockname()[1],
             source_port=self.source.server_port,
             max_listeners=1,
         )
         self.state = RadioState()
-        self.server = RadioServer(config, self.state)
+        self.server = RadioServer(config, self.state, self.listener.dup())
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.01}
         )
@@ -77,6 +83,7 @@ class HTTPTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
         self.server.server_close()
+        self.listener.close()
         self.source.stopping.set()
         self.source.shutdown()
         self.source_thread.join(timeout=2)
@@ -231,11 +238,20 @@ class HTTPTests(unittest.TestCase):
 
     @unittest.skipUnless(socket.has_ipv6, "IPv6 sockets unavailable")
     def test_explicit_ipv6_listener(self):
-        config = Config({"1": self.root}, b"test-only-token", listen_address="::1", port=0)
+        listener = socket.socket(socket.AF_INET6)
+        self.addCleanup(listener.close)
         try:
-            server = RadioServer(config, self.state)
+            listener.bind(("::1", 0))
+            listener.listen(32)
         except OSError:
             self.skipTest("IPv6 loopback unavailable")
+        config = Config(
+            {"1": self.root},
+            b"test-only-token",
+            listen_address="::1",
+            port=listener.getsockname()[1],
+        )
+        server = RadioServer(config, self.state, listener.dup())
         serving = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
         serving.start()
         connection = http.client.HTTPConnection("::1", server.server_port, timeout=2)
@@ -247,6 +263,176 @@ class HTTPTests(unittest.TestCase):
             server.shutdown()
             serving.join(timeout=2)
             server.server_close()
+
+    def test_external_owner_reserves_port_across_worker_restart(self):
+        config = self.server.config
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+        with socket.socket() as impostor:
+            with self.assertRaises(OSError):
+                impostor.bind(("127.0.0.1", config.port))
+        self.server = RadioServer(config, self.state, self.listener.dup())
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}
+        )
+        self.thread.start()
+        _, response = self.request("GET", "/radio/info")
+        self.assertEqual(response.status, 200)
+        with socket.socket() as impostor:
+            with self.assertRaises(OSError):
+                impostor.bind(("127.0.0.1", config.port))
+
+
+ACTIVATION_CHILD = """
+import json
+import os
+import sys
+from unittest.mock import patch
+from navdio.app import main
+from navdio.config import Config
+from navdio.http import inherited_listener
+
+fd, filename, pid, count, mode = sys.argv[1:]
+if int(fd) >= 0:
+    os.dup2(int(fd), 3, inheritable=True)
+    os.set_inheritable(3, True)
+    if int(fd) != 3:
+        os.close(int(fd))
+if pid != "missing":
+    os.environ["LISTEN_PID"] = str(os.getpid()) if pid == "self" else pid
+if count != "missing":
+    os.environ["LISTEN_FDS"] = count
+os.environ["LISTEN_FDNAMES"] = "http"
+if mode == "inspect":
+    with inherited_listener(Config.load(filename)) as listener:
+        result = {"port": listener.getsockname()[1],
+                  "inheritable": listener.get_inheritable()}
+    status = 0
+else:
+    with patch("navdio.app.Player.start") as start:
+        status = main(["--config", filename])
+        result = {"mpd_started": start.called}
+try:
+    result["fd3_inheritable"] = os.get_inheritable(3)
+except OSError:
+    result["fd3_inheritable"] = None
+result["activation"] = [name for name in os.environ if name.startswith("LISTEN_")]
+print(json.dumps(result))
+raise SystemExit(status)
+"""
+
+
+class ActivationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.listener = socket.socket()
+        self.addCleanup(self.listener.close)
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(32)
+        self.port = self.listener.getsockname()[1]
+        token = self.root / "token"
+        token.write_text("test-only-token")
+        self.config = self.root / "config.json"
+        self.configuration = {
+            "libraries": {"1": str(self.root)},
+            "tokenFile": str(token),
+            "runtimeDirectory": str(self.root / "runtime"),
+            "port": self.port,
+            "sourcePort": 1 if self.port != 1 else 2,
+        }
+
+    def child(self, descriptor=None, pid="self", count="1", mode="main", **config):
+        self.config.write_text(json.dumps({**self.configuration, **config}))
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("LISTEN_")
+        }
+        environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                ACTIVATION_CHILD,
+                str(descriptor if descriptor is not None else -1),
+                str(self.config),
+                pid,
+                count,
+                mode,
+            ],
+            pass_fds=() if descriptor is None else (descriptor,),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    def assert_rejected(self, result):
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("test-only-token", result.stderr)
+        self.assertNotIn(str(self.root), result.stderr)
+        observation = json.loads(result.stdout)
+        self.assertFalse(observation["mpd_started"])
+        self.assertEqual(observation["activation"], [])
+
+    def test_missing_and_invalid_activation_fail_before_mpd(self):
+        self.assert_rejected(self.child(pid="missing", count="missing"))
+        self.assert_rejected(self.child())
+        for pid, count in (
+            ("missing", "1"),
+            ("0", "1"),
+            ("invalid", "1"),
+            ("self", "missing"),
+            ("self", "0"),
+            ("self", "2"),
+            ("self", "-1"),
+            ("self", "invalid"),
+        ):
+            with self.subTest(pid=pid, count=count):
+                self.assert_rejected(self.child(self.listener.fileno(), pid=pid, count=count))
+
+    def test_wrong_socket_or_endpoint_is_rejected(self):
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with self.subTest(kind=kind), socket.socket(type=kind) as listener:
+                listener.bind(("127.0.0.1", 0))
+                self.assert_rejected(self.child(listener.fileno()))
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(self.root / "unix.sock"))
+            listener.listen()
+            self.assert_rejected(self.child(listener.fileno()))
+        with self.config.open("w") as not_socket:
+            self.assert_rejected(self.child(not_socket.fileno()))
+        self.assert_rejected(self.child(self.listener.fileno(), port=self.port % 65535 + 1))
+        self.assert_rejected(self.child(self.listener.fileno(), listenAddress="0.0.0.0"))
+        self.assert_rejected(self.child(self.listener.fileno(), listenAddress="::1"))
+
+    def test_valid_activation_consumes_fd3_and_clears_environment(self):
+        result = self.child(self.listener.fileno(), mode="inspect")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        observation = json.loads(result.stdout)
+        self.assertEqual(observation["port"], self.port)
+        self.assertFalse(observation["inheritable"])
+        self.assertEqual(observation["activation"], [])
+        with socket.socket() as impostor:
+            with self.assertRaises(OSError):
+                impostor.bind(("127.0.0.1", self.port))
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 sockets unavailable")
+    def test_valid_ipv6_activation(self):
+        with socket.socket(socket.AF_INET6) as listener:
+            try:
+                listener.bind(("::1", 0))
+                listener.listen()
+            except OSError:
+                self.skipTest("IPv6 loopback unavailable")
+            result = self.child(
+                listener.fileno(),
+                mode="inspect",
+                listenAddress="::1",
+                port=listener.getsockname()[1],
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

@@ -3,15 +3,15 @@
   lib,
   pkgs,
   ...
-}:
-let
+}: let
   cfg = config.services.navdio;
   navidrome = config.services.navidrome;
-  json = pkgs.formats.json { };
+  json = pkgs.formats.json {};
   libraryRoots = builtins.attrValues cfg.libraries;
   runtimeDirectory = "/run/navdio";
   companionConfig = json.generate "navdio.json" {
-    inherit (cfg)
+    inherit
+      (cfg)
       listenAddress
       port
       sourcePort
@@ -30,24 +30,24 @@ let
   };
   serverConfig = json.generate "navdio-navidrome.json" navidrome.settings;
   dataDirectory = navidrome.settings.DataFolder or "/var/lib/navidrome";
-  writableNavidromePaths = [
-    dataDirectory
-  ]
-  ++ lib.optional (navidrome.settings ? CacheFolder) navidrome.settings.CacheFolder
-  ++ lib.optional (navidrome.settings ? Backup.Path) navidrome.settings.Backup.Path;
-in
-{
+  writableNavidromePaths =
+    [
+      dataDirectory
+    ]
+    ++ lib.optional (navidrome.settings ? CacheFolder) navidrome.settings.CacheFolder
+    ++ lib.optional (navidrome.settings ? Backup.Path) navidrome.settings.Backup.Path;
+in {
   options.services.navdio = {
     enable = lib.mkEnableOption "Share your Navidrome listening session with the world";
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../packages/companion.nix { };
+      default = pkgs.callPackage ../packages/companion.nix {};
       defaultText = lib.literalExpression "pkgs.callPackage ../packages/companion.nix { }";
       description = "The Navdio companion package to use.";
     };
     pluginPackage = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ../packages/plugin.nix { };
+      default = pkgs.callPackage ../packages/plugin.nix {};
       defaultText = lib.literalExpression "pkgs.callPackage ../packages/plugin.nix { }";
       description = ''
         The Navdio plugin package to install through
@@ -74,7 +74,7 @@ in
     };
     libraries = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = { };
+      default = {};
       example = {
         "1" = "/srv/music";
       };
@@ -140,8 +140,8 @@ in
     };
     supplementaryGroups = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
-      example = [ "music" ];
+      default = [];
+      example = ["music"];
       description = ''
         Existing groups that grant the companion read and traverse access to
         music.
@@ -164,7 +164,8 @@ in
       }
       {
         assertion =
-          cfg.libraries != { }
+          cfg.libraries
+          != {}
           && lib.all (key: builtins.match "[1-9][0-9]*" key != null) (builtins.attrNames cfg.libraries);
         message = "services.navdio.libraries must map positive Navidrome library IDs to music roots.";
       }
@@ -190,25 +191,40 @@ in
         message = "Automatic plugin setup connects to 127.0.0.1. listenAddress must accept IPv4 loopback.";
       }
     ];
-    services.navidrome.plugins = [ cfg.pluginPackage ];
+    services.navidrome.plugins = [cfg.pluginPackage];
     services.navidrome.settings.Plugins.Enabled = true;
     users.users.navdio = {
       isSystemUser = true;
       group = "navdio";
     };
-    users.groups.navdio = { };
+    users.groups.navdio = {};
+    systemd.sockets.navdio = {
+      description = "Reserve the Navdio HTTP endpoint";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenStream =
+          if lib.hasInfix ":" cfg.listenAddress
+          then "[${cfg.listenAddress}]:${toString cfg.port}"
+          else "${cfg.listenAddress}:${toString cfg.port}";
+        Backlog = 32;
+      };
+    };
     systemd.services.navdio = {
       description = "Share your Navidrome listening session with the world";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
+      wantedBy = ["multi-user.target"];
+      requires = ["navdio.socket"];
+      after = [
+        "local-fs.target"
+        "navdio.socket"
+      ];
       unitConfig.RequiresMountsFor = libraryRoots;
-      restartTriggers = [ companionConfig ];
+      restartTriggers = [companionConfig];
       serviceConfig = {
         ExecStart = "${lib.getExe cfg.package} --config ${companionConfig}";
         User = "navdio";
         Group = "navdio";
         SupplementaryGroups = cfg.supplementaryGroups;
-        LoadCredential = [ "event-token:${cfg.tokenFile}" ];
+        LoadCredential = ["event-token:${cfg.tokenFile}"];
         RuntimeDirectory = "navdio";
         RuntimeDirectoryMode = "0700";
         Restart = "on-failure";
@@ -235,13 +251,13 @@ in
     };
     systemd.services.navdio-plugin = lib.mkIf cfg.configurePlugin {
       description = "Configure Navdio's Navidrome plugin";
-      wantedBy = [ "navidrome.service" ];
-      before = [ "navidrome.service" ];
+      wantedBy = ["navidrome.service"];
+      before = ["navidrome.service"];
       after = [
         "navdio.service"
         "systemd-tmpfiles-setup.service"
       ];
-      requires = [ "navdio.service" ];
+      requires = ["navdio.service"];
       unitConfig.RequiresMountsFor = writableNavidromePaths;
       environment.ND_LOGLEVEL = "error";
       serviceConfig = {
@@ -252,7 +268,7 @@ in
         EnvironmentFile = lib.mkIf (navidrome.environmentFile != null) [
           navidrome.environmentFile
         ];
-        LoadCredential = [ "event-token:${cfg.tokenFile}" ];
+        LoadCredential = ["event-token:${cfg.tokenFile}"];
         ExecStart = lib.escapeShellArgs [
           "${pkgs.python3}/bin/python"
           "${../../companion/scripts/configure-plugin.py}"
@@ -270,6 +286,8 @@ in
         ReadWritePaths = writableNavidromePaths;
       };
     };
+    systemd.services.navidrome.bindsTo = ["navdio.socket"];
+    systemd.services.navidrome.after = ["navdio.socket"];
     systemd.services.navidrome.restartTriggers = lib.optionals cfg.configurePlugin [
       pluginConfig
       cfg.pluginPackage

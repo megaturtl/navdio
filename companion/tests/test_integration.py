@@ -10,6 +10,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -23,6 +24,19 @@ from PIL import Image
 PROJECT = Path(__file__).resolve().parent.parent
 COMPANION = os.environ.get("NAVDIO_COMPANION_EXE")
 PLUGIN = os.environ.get("NAVDIO_PLUGIN_ARCHIVE")
+ACTIVATED_EXEC = """
+import os
+import sys
+fd = int(sys.argv[1])
+os.dup2(fd, 3, inheritable=True)
+os.set_inheritable(3, True)
+if fd != 3:
+    os.close(fd)
+os.environ["LISTEN_PID"] = str(os.getpid())
+os.environ["LISTEN_FDS"] = "1"
+os.environ.pop("LISTEN_FDNAMES", None)
+os.execv(sys.argv[2], sys.argv[2:])
+"""
 
 
 def free_port():
@@ -72,6 +86,7 @@ class IntegrationTests(unittest.TestCase):
             root = Path(temporary)
             processes: list[subprocess.Popen[bytes]] = []
             logs: list[io.TextIOWrapper] = []
+            listener = socket.socket()
             token, password = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
             try:
                 music, plugins = root / "music", root / "plugins"
@@ -106,10 +121,15 @@ class IntegrationTests(unittest.TestCase):
                         check=True,
                         capture_output=True,
                     )
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(32)
+                port = listener.getsockname()[1]
                 ports = set()
-                while len(ports) < 3:
-                    ports.add(free_port())
-                port, source_port, nd_port = ports
+                while len(ports) < 2:
+                    candidate = free_port()
+                    if candidate != port:
+                        ports.add(candidate)
+                source_port, nd_port = ports
                 origin, nd_origin = f"http://127.0.0.1:{port}", f"http://127.0.0.1:{nd_port}"
                 credentials = root / "credentials"
                 credentials.mkdir(mode=0o700)
@@ -151,16 +171,32 @@ class IntegrationTests(unittest.TestCase):
                     )
                 )
 
-                def launch(command: list[str], name: str) -> subprocess.Popen[bytes]:
+                def launch(
+                    command: list[str],
+                    name: str,
+                    inherited: socket.socket | None = None,
+                ) -> subprocess.Popen[bytes]:
                     log = (root / name).open("w+")
                     logs.append(log)
+                    if inherited is not None:
+                        command = [
+                            sys.executable,
+                            "-c",
+                            ACTIVATED_EXEC,
+                            str(inherited.fileno()),
+                            *command,
+                        ]
                     process = subprocess.Popen(
-                        command, stdout=log, stderr=log, start_new_session=True
+                        command,
+                        stdout=log,
+                        stderr=log,
+                        start_new_session=True,
+                        pass_fds=() if inherited is None else (inherited.fileno(),),
                     )
                     processes.append(process)
                     return process
 
-                launch([companion, "--config", str(config)], "companion.log")
+                worker = launch([companion, "--config", str(config)], "companion.log", listener)
                 eventually(lambda: request(origin + "/radio/info"), "companion startup")
                 setup = launch([navidrome, "--configfile", str(nd_config)], "setup.log")
                 eventually(lambda: request(nd_origin + "/ping"), "Navidrome startup")
@@ -249,6 +285,13 @@ class IntegrationTests(unittest.TestCase):
                     return info()["state"] == "playing"
 
                 eventually(reporting_client, "authorised plugin playback event")
+                stop(worker)
+                with socket.socket() as impostor:
+                    with self.assertRaises(OSError):
+                        impostor.bind(("127.0.0.1", port))
+                self.assertIsNone(server.poll())
+                launch([companion, "--config", str(config)], "companion-restart.log", listener)
+                eventually(reporting_client, "playback after companion restart")
                 public = info()
                 self.assertEqual(public["title"], songs[0]["title"])
                 self.assertEqual(
@@ -339,6 +382,7 @@ class IntegrationTests(unittest.TestCase):
                     stop(process)
                 for log in logs:
                     log.close()
+                listener.close()
 
 
 if __name__ == "__main__":

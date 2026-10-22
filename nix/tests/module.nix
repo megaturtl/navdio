@@ -31,6 +31,10 @@ in
   assert pkgs.lib.assertMsg (failures == []) (builtins.concatStringsSep "\n" failures);
     pkgs.linkFarm "navdio-nixos-units" [
       {
+        name = "navdio.socket";
+        path = system.config.systemd.units."navdio.socket".unit;
+      }
+      {
         name = "navdio.service";
         path = system.config.systemd.units."navdio.service".unit;
       }
