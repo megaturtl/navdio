@@ -89,6 +89,49 @@ class PlayerTests(unittest.TestCase):
         with self.assertRaises(PlayerError):
             second._runtime()
 
+    def test_replacement_after_validation_cannot_change_the_opened_track(self):
+        self.player._runtime()
+        self.addCleanup(self.player.close)
+        original = self.song.read_bytes()
+        with tempfile.TemporaryDirectory() as private:
+            outside = Path(private) / "private.wav"
+            outside.write_bytes(b"outside-library audio")
+
+            def replace_song():
+                self.song.unlink()
+                self.song.symlink_to(outside)
+
+            decoded = []
+            self.client.clear.side_effect = replace_song
+            self.client.add.side_effect = lambda uri: decoded.append(
+                Path(uri.removeprefix("file://")).read_bytes()
+            )
+            self.player.apply(Observation("playing", 0, 100, self.track))
+            self.assertEqual(decoded, [original])
+            self.assertEqual(self.song.read_bytes(), b"outside-library audio")
+            source = self.player.source_file
+            assert source is not None
+            self.client.clear.side_effect = None
+            self.player.apply(Observation())
+            self.assertTrue(source.closed)
+
+    def test_replacement_before_open_cannot_escape_the_library(self):
+        with tempfile.TemporaryDirectory() as private:
+            outside = Path(private) / "private.wav"
+            outside.write_bytes(b"outside-library audio")
+            self.song.unlink()
+            self.song.symlink_to(outside)
+            with self.assertRaises(PlayerError):
+                self.player.apply(Observation("playing", 0, 100, self.track))
+            self.client.add.assert_not_called()
+
+    def test_nonregular_track_does_not_block_or_reach_mpd(self):
+        self.song.unlink()
+        os.mkfifo(self.song)
+        with self.assertRaises(PlayerError):
+            self.player.apply(Observation("playing", 0, 100, self.track))
+        self.client.add.assert_not_called()
+
 
 MPD = os.environ.get("NAVDIO_TEST_MPD") or shutil.which("mpd")
 
@@ -99,12 +142,18 @@ class RealMPDTests(unittest.TestCase):
         assert MPD is not None
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            song = root / "audio #100% literal.wav"
+            music = root / "music"
+            music.mkdir()
+            song = music / "audio #100% literal.wav"
             with wave.open(str(song), "wb") as output:
                 output.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
                 output.writeframes(b"\x00\x10\x00\x10" * (48000 * 6))
+            outside = root / "private.wav"
+            with wave.open(str(outside), "wb") as output:
+                output.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
+                output.writeframes(b"\x00\x20\x00\x20" * 48000)
             config = Config(
-                {"1": root},
+                {"1": music},
                 b"test-only-token",
                 source_port=free_port(),
                 runtime_directory=root / "runtime",
@@ -139,9 +188,19 @@ class RealMPDTests(unittest.TestCase):
                 self.assertTrue(data.startswith(b"OggS"))
                 self.assertIn(b"OpusHead", data)
                 track = Track(("song",), song, "Title", (), None, 6000)
-                player.apply(Observation("playing", 2000, time.monotonic(), track))
-                self.assertTrue(player.client.playlistinfo()[0]["file"].endswith(str(song)))
-                elapsed = float(player.status()["elapsed"])
+                clear = player.client.clear
+
+                def replace_song():
+                    clear()
+                    song.unlink()
+                    song.symlink_to(outside)
+
+                with patch.object(player.client, "clear", side_effect=replace_song):
+                    player.apply(Observation("playing", 2000, time.monotonic(), track))
+                status = player.status()
+                self.assertEqual(status["state"], "play")
+                self.assertAlmostEqual(float(status["duration"]), 6, delta=0.1)
+                elapsed = float(status["elapsed"])
                 self.assertGreaterEqual(elapsed, 1.5)
                 self.assertLess(elapsed, 3)
             finally:

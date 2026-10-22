@@ -64,6 +64,8 @@ class Player:
         self.client.timeout = 3
         self.process: subprocess.Popen[bytes] | None = None
         self.lock_file: BinaryIO | None = None
+        self.source_file: BinaryIO | None = None
+        self.source_link: Path | None = None
         self.loaded_key = None
         self.policy = SyncPolicy()
 
@@ -189,6 +191,45 @@ audio_output {{
         except (MPDError, OSError):
             raise PlayerError("MPD bootstrap failed") from None
 
+    def _close_track(self):
+        try:
+            if self.source_link is not None:
+                self.source_link.unlink(missing_ok=True)
+        finally:
+            self.source_link = None
+            if self.source_file is not None:
+                self.source_file.close()
+                self.source_file = None
+            self.loaded_key = None
+
+    def _load_track(self, track):
+        path = Path(track.path)
+        if any(char in str(path) for char in "\r\n\x00"):
+            raise PlayerError("Track is no longer available in its library")
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        source = os.fdopen(fd, "rb")
+        link = self.config.runtime_directory / ("track" + path.suffix)
+        try:
+            opened_path = Path(f"/proc/self/fd/{source.fileno()}").resolve(strict=True)
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode) or not any(
+                opened_path.is_relative_to(root) for root in self.config.libraries.values()
+            ):
+                raise PlayerError("Track is no longer available in its library")
+            self.client.clear()
+            self._close_track()
+            # Keep the validated inode open. The private link preserves its decoder suffix.
+            link.unlink(missing_ok=True)
+            link.symlink_to(f"/proc/{os.getpid()}/fd/{source.fileno()}")
+            self.source_link = link
+            self.client.add("file://" + str(link))
+        except BaseException:
+            source.close()
+            if self.source_link == link:
+                self._close_track()
+            raise
+        self.source_file = source
+        self.loaded_key = track.key
+
     def apply(self, observation):
         status = self.status()
         position = int(float(status.get("elapsed", 0)) * 1000)
@@ -204,26 +245,13 @@ audio_output {{
                 if status["state"] != "stop" or self.loaded_key is not None:
                     self.client.stop()
                     self.client.clear()
-                self.loaded_key = None
+                self._close_track()
             elif result.state != "playing":
                 if status["state"] == "play":
                     self.client.pause(1)
             elif restart:
                 if self.loaded_key != result.track.key:
-                    path = Path(result.track.path)
-                    if (
-                        not path.is_file()
-                        or not any(
-                            path.resolve(strict=True).is_relative_to(root)
-                            for root in self.config.libraries.values()
-                        )
-                        or any(char in str(path) for char in "\r\n\x00")
-                    ):
-                        raise PlayerError("Track is no longer available in its library")
-                    self.client.clear()
-                    # MPD's local file scheme takes literal paths, not URI escapes.
-                    self.client.add("file://" + str(path))
-                    self.loaded_key = result.track.key
+                    self._load_track(result.track)
                 self.client.seek(0, result.position_ms / 1000)
                 self.client.pause(0)
             self.status()
@@ -248,6 +276,9 @@ audio_output {{
                 else:
                     self.process.wait()
         finally:
-            if self.lock_file is not None:
-                self.lock_file.close()
-                self.lock_file = None
+            try:
+                self._close_track()
+            finally:
+                if self.lock_file is not None:
+                    self.lock_file.close()
+                    self.lock_file = None

@@ -52,7 +52,9 @@ Invalid event artwork rejects the event. Missing plugin artwork does not prevent
 The plugin filters reports by its configured user and client.
 The companion prefers playing sessions, then the newest report, then stable player identity.
 Older reports cannot replace a session's newer state.
-Paths must resolve inside a mapped library root. Only normal-speed playback is broadcast.
+Paths must resolve inside a mapped library root.
+The companion validates an open file handle and keeps it until MPD releases the track.
+Only normal-speed playback is broadcast.
 
 The plugin sends heartbeats every five seconds.
 Any accepted event refreshes source liveness.

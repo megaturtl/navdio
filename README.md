@@ -150,6 +150,8 @@ When source liveness expires, metadata becomes idle and the cover disappears.
 MPD reads ReplayGain tags from the files. Missing tags leave gain unchanged.
 Navdio does not submit plays or scrobbles.
 Public responses exclude tokens, native paths, and user or player identifiers.
+MPD uses a private link to an open, validated music file.
+Replacing a library pathname cannot redirect that file handle outside its library.
 
 ## Check the installation
 
