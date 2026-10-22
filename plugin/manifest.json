@@ -1,0 +1,63 @@
+{
+  "name": "Navdio",
+  "author": "megaturtl",
+  "version": "0.1.0",
+  "description": "Broadcast a selected Navidrome user's playback through a local Navdio companion.",
+  "permissions": {
+    "users": {
+      "reason": "Read playback for the selected user and request cover art as that user. Grant only the broadcast user."
+    },
+    "library": {
+      "reason": "Read the relative file path and library ID for playback reports. Grant only broadcast libraries.",
+      "filesystem": true
+    },
+    "subsonicapi": {
+      "reason": "Read a 50-pixel cover using the internal getCoverArt endpoint."
+    },
+    "scheduler": {
+      "reason": "Send a liveness heartbeat every five seconds."
+    },
+    "cache": {
+      "reason": "Cache bounded cover images per user and track."
+    },
+    "http": {
+      "reason": "Send authenticated playback events to the loopback companion only.",
+      "requiredHosts": ["127.0.0.1", "::1"]
+    }
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username", "token"],
+      "properties": {
+        "username": {
+          "type": "string",
+          "title": "Broadcast username",
+          "description": "Exact Navidrome username. Configure user and library grants separately.",
+          "minLength": 1
+        },
+        "player": {
+          "type": "string",
+          "title": "Player filter",
+          "description": "Optional case-insensitive exact player name. Empty selects all this user's players.",
+          "default": ""
+        },
+        "companionUrl": {
+          "type": "string",
+          "title": "Companion origin",
+          "description": "HTTP(S) origin using the literal loopback host 127.0.0.1 or [::1], without credentials, path, query, or fragment.",
+          "default": "http://127.0.0.1:8750"
+        },
+        "token": {
+          "type": "string",
+          "title": "Companion event token",
+          "description": "Secret shared with the companion. Configure at runtime. Do not put it in source control.",
+          "format": "password",
+          "writeOnly": true,
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

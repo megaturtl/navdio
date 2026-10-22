@@ -1,0 +1,6 @@
+[environment]
+python-version = "3.12"
+extra-paths = ["companion/src", "companion/typings"]
+
+[src]
+include = ["companion"]
