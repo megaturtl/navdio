@@ -141,6 +141,10 @@ Track changes, resume, and natural repeats start at the reported position.
 Mid-song seeks, clock drift, and new listeners do not reposition the shared player.
 Client reports and audio buffers make synchronisation approximate.
 
+Chromium buffers direct streams in 32 KiB blocks, which take about eight seconds to fill at 32 kbps.
+Set `services.navdio.bitrateKbps = 128` to reduce this delay, at four times the audio traffic.
+This does not remove browser buffering or guarantee gap-free playback.
+
 Pause, idle, and source loss produce compressed silence without disconnecting listeners.
 Idle traffic is small, not zero.
 Without listeners, Navdio sends no audio, but MPD's encoder can remain active.

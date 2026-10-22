@@ -78,6 +78,22 @@ class PlayerTests(unittest.TestCase):
         self.assertNotIn(str(self.song), str(error.exception))
         self.client.add.assert_not_called()
 
+    def test_mpd_error_after_playback_commands_fails_closed(self):
+        for state in ("playing", "paused", "idle"):
+            with self.subTest(state=state):
+                self.player.policy = SyncPolicy()
+                self.player.loaded_key = self.track.key
+                self.client.status.side_effect = [
+                    {"state": "play", "elapsed": "0.5"},
+                    {"state": "stop", "error": str(self.song)},
+                ]
+                observation = (
+                    Observation() if state == "idle" else Observation(state, 0, 100, self.track)
+                )
+                with self.assertRaises(PlayerError) as error:
+                    self.player.apply(observation)
+                self.assertNotIn(str(self.song), str(error.exception))
+
     def test_runtime_files_are_private_and_single_instance(self):
         self.player.process = None
         self.addCleanup(self.player.close)

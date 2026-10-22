@@ -9,6 +9,14 @@ Expose only the three public GET routes.
 For an nginx host with a domain and TLS already configured, add these locations:
 
 ```nix
+services.nginx.appendHttpConfig = ''
+  limit_conn_zone navdio zone=navdio_public:1m;
+'';
+
+services.nginx.virtualHosts."radio.example.org".extraConfig = ''
+  limit_conn navdio_public 52;
+'';
+
 services.nginx.virtualHosts."radio.example.org".locations = {
   "/".return = "404";
   "= /radio/stream" = {
@@ -50,6 +58,13 @@ The companion port includes the private `/_navdio/events` endpoint.
 CORS permits browser reads. It does not authorise private events.
 Use a specific allowed origin instead of `*` if needed.
 
+The aggregate limit permits 52 public requests at once, including streams, info, and cover.
+The default companion permits 56 requests, which leaves four slots for private events.
+Excess public requests receive 503.
+If you change `maxListeners`, set this limit no higher than `maxListeners + 12`.
+Apply the limit across all public routes and ingress hosts that use the same companion.
+If a location adds its own `limit_conn` directives, repeat the aggregate limit there.
+
 ## Remote nginx ingress
 
 For a remote public server, proxy requests over a private VPN to nginx on the Navidrome host.
@@ -77,6 +92,7 @@ Two upstream settings matter:
 Allow only that ingress IP on the source's exact `/radio/stream`, `/radio/info`, and `/radio/cover` locations.
 Do not expose the whole companion port to the VPN.
 Disable proxy buffering on both nginx stream locations and use a long read timeout.
+Apply the aggregate public-request limit on the source nginx.
 At public ingress, allow only GET requests and set CORS headers on stream, info, and cover.
 When an upstream already sends CORS headers, hide them before adding the public header to avoid duplicates.
 

@@ -240,21 +240,26 @@ audio_output {{
         ):
             position = observation.track.duration_ms or position
         result, restart = self.policy.update(observation, position, self.clock())
+        changed = False
         try:
             if result.track is None:
                 if status["state"] != "stop" or self.loaded_key is not None:
                     self.client.stop()
                     self.client.clear()
+                    changed = True
                 self._close_track()
             elif result.state != "playing":
                 if status["state"] == "play":
                     self.client.pause(1)
+                    changed = True
             elif restart:
                 if self.loaded_key != result.track.key:
                     self._load_track(result.track)
                 self.client.seek(0, result.position_ms / 1000)
                 self.client.pause(0)
-            self.status()
+                changed = True
+            if changed:
+                self.status()
             return result
         except (MPDError, OSError, ValueError, RuntimeError):
             raise PlayerError("MPD synchronisation failed") from None
