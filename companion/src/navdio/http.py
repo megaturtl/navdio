@@ -1,6 +1,7 @@
 """Bounded event intake and the three public radio endpoints."""
 
 import http.client
+import ipaddress
 import json
 import logging
 import os
@@ -10,9 +11,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
+from typing import cast
 
 from .config import Config, RadioError
 from .state import MAX_BODY_BYTES, EventError, RadioState, parse_event
+from .stats import Statistics
 
 IO_TIMEOUT = 5
 LOGGER = logging.getLogger(__name__)
@@ -53,9 +56,16 @@ class RadioServer(ThreadingMixIn, HTTPServer):
     block_on_close = True
     request_queue_size = 32
 
-    def __init__(self, config: Config, state: RadioState, listener: socket.socket):
+    def __init__(
+        self,
+        config: Config,
+        state: RadioState,
+        listener: socket.socket,
+        statistics: Statistics | None,
+    ):
         self.config = config
         self.state = state
+        self.statistics = statistics
         self.listener_slots = threading.BoundedSemaphore(config.max_listeners)
         self.request_slots = threading.BoundedSemaphore(config.max_listeners + 16)
         self.connections_lock = threading.Lock()
@@ -144,10 +154,13 @@ class RadioServer(ThreadingMixIn, HTTPServer):
 
 
 class RadioHandler(BaseHTTPRequestHandler):
-    server: RadioServer
     server_version = "navdio"
     sys_version = ""
     protocol_version = "HTTP/1.0"
+
+    @property
+    def radio(self) -> RadioServer:
+        return cast(RadioServer, self.server)
 
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -181,7 +194,7 @@ class RadioHandler(BaseHTTPRequestHandler):
         authorization = authorizations[0] if len(authorizations) == 1 else ""
         scheme, _, credential = authorization.partition(" ")
         if scheme.lower() != "bearer" or not secrets.compare_digest(
-            credential.encode("utf-8"), self.server.config.token
+            credential.encode("utf-8"), self.radio.config.token
         ):
             self.reply(401, extra={"WWW-Authenticate": "Bearer"})
             return
@@ -224,8 +237,8 @@ class RadioHandler(BaseHTTPRequestHandler):
                     return
                 body.extend(chunk)
             self.connection.settimeout(IO_TIMEOUT)
-            event = parse_event(body, self.server.config.libraries)
-            self.server.state.accept(event)
+            event = parse_event(body, self.radio.config.libraries)
+            self.radio.state.accept(event)
         except EventError as error:
             self.reply(400 if str(error) == "Invalid event JSON" else 422)
             return
@@ -237,11 +250,11 @@ class RadioHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/radio/info":
             body = json.dumps(
-                self.server.state.info(), ensure_ascii=False, separators=(",", ":")
+                self.radio.state.info(), ensure_ascii=False, separators=(",", ":")
             ).encode("utf-8")
             self.reply(200, body)
         elif self.path == "/radio/cover":
-            cover = self.server.state.cover()
+            cover = self.radio.state.cover()
             if cover:
                 self.reply(200, cover, "image/jpeg")
             else:
@@ -251,8 +264,27 @@ class RadioHandler(BaseHTTPRequestHandler):
         else:
             self.reply(404)
 
+    def statistics_address(self) -> str:
+        peer = ipaddress.ip_address(self.client_address[0])
+        if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
+        if any(peer in network for network in self.radio.config.stats_trusted_proxies):
+            values = self.headers.get_all("X-Real-IP", [])
+            if len(values) == 1 and "%" not in values[0]:
+                try:
+                    address = ipaddress.ip_address(values[0])
+                    if (
+                        isinstance(address, ipaddress.IPv6Address)
+                        and address.ipv4_mapped is not None
+                    ):
+                        address = address.ipv4_mapped
+                    return str(address)
+                except ValueError:
+                    pass
+        return str(peer)
+
     def stream(self):
-        server = self.server
+        server = self.radio
         if not server.listener_slots.acquire(blocking=False):
             self.reply(503)
             return
@@ -261,6 +293,8 @@ class RadioHandler(BaseHTTPRequestHandler):
         )
         response = None
         sent = False
+        statistics = server.statistics
+        stream_id = None
         try:
             if not server.register_upstream(upstream):
                 self.reply(503)
@@ -282,7 +316,14 @@ class RadioHandler(BaseHTTPRequestHandler):
                 chunk = response.read1(8192)
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                written = self.wfile.write(chunk)
+                if statistics is not None and written > 0:
+                    if stream_id is None:
+                        stream_id = statistics.begin(self.statistics_address(), written)
+                        if stream_id is None:
+                            statistics = None
+                    else:
+                        statistics.add(stream_id, written)
         except (OSError, http.client.HTTPException, ValueError):
             if not sent:
                 try:
@@ -290,6 +331,8 @@ class RadioHandler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
         finally:
+            if statistics is not None and stream_id is not None:
+                statistics.end(stream_id)
             self.close_connection = True
             if response is not None:
                 response.close()

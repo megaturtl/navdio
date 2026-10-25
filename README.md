@@ -93,6 +93,7 @@ The module:
 - Grants access only to the selected user and libraries, without library writes.
 - Sends the token through stdin, not command-line arguments.
 - Restarts Navidrome when managed plugin settings change.
+- Installs the `navdio` command and keeps private statistics in `/var/lib/navdio`.
 
 Navidrome runs only while `navdio.socket` is active.
 Plugin provisioning can fail without stopping Navidrome while that socket remains active.
@@ -120,6 +121,7 @@ Otherwise, each Navidrome startup restores the managed values. Web UI edits to t
 | `replaygain` | `track`, `album`, or `off`, with peak limiting. Default: `track` |
 | `maxListeners` | Concurrent direct stream connections. Default: 40 |
 | `supplementaryGroups` | Existing groups needed to read music |
+| `statsTrustedProxies` | Proxy CIDRs trusted for statistics-only `X-Real-IP`. Default: `[]` |
 | `configurePlugin` | Manage plugin settings and grants. Default: true |
 
 Do not expose the companion's entire HTTP port. It includes the private event endpoint.
@@ -156,6 +158,30 @@ Navdio does not submit plays or scrobbles.
 Public responses exclude tokens, native paths, and user or player identifiers.
 MPD uses a private link to an open, validated music file.
 Replacing a library pathname cannot redirect that file handle outside its library.
+
+## Radio statistics
+
+View radio statistics with:
+
+```sh
+sudo -u navdio navdio stats
+```
+
+The report shows current connections, audio sent, unique IPs, and total listen time.
+The table includes rolling totals for the last hour, 24 hours, seven days, and 30 days, along with all-time totals.
+Navdio saves counters every five seconds and uses minute buckets for the rolling totals.
+
+Total listen time adds up stream connection durations, so two listeners connected for an hour contribute two listener-hours.
+It includes silence and buffering, and audio totals measure the payload sent to listeners.
+Unique counts use IP addresses, so shared addresses count once and changing addresses can increase the count.
+
+Statistics persist in `/var/lib/navdio/stats.sqlite3`, which retains a keyed hash for each IP to support all-time unique counts.
+Configure [trusted proxies](docs/proxy.md) to count listener IPs behind nginx.
+Existing databases upgrade automatically, with total listen time collected from the upgrade onward.
+If storage fails, playback continues while statistics stay disabled until the service restarts.
+
+The command runs without a configuration file or event token and accepts `--database /absolute/path/to/stats.sqlite3` for a separate database.
+Saved totals remain available while the service is stopped, and stale snapshots show the connection count as unavailable.
 
 ## Check the installation
 

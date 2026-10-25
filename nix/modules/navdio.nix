@@ -19,8 +19,10 @@
       bitrateKbps
       replaygain
       maxListeners
+      statsTrustedProxies
       ;
     inherit runtimeDirectory;
+    statsDatabase = "/var/lib/navdio/stats.sqlite3";
     tokenFile = "/run/credentials/navdio.service/event-token";
     mpd = lib.getExe pkgs.mpd;
   };
@@ -138,6 +140,15 @@ in {
       default = 40;
       description = "Maximum concurrent stream connections, including connections through a reverse proxy.";
     };
+    statsTrustedProxies = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = ["127.0.0.1/32"];
+      description = ''
+        Proxy networks allowed to supply listener IPs through X-Real-IP for statistics.
+        Use the addresses of proxies that connect directly to the companion.
+      '';
+    };
     supplementaryGroups = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [];
@@ -193,6 +204,7 @@ in {
     ];
     services.navidrome.withPlugins = _: [cfg.pluginPackage];
     services.navidrome.settings.Plugins.Enabled = true;
+    environment.systemPackages = [cfg.package];
     users.users.navdio = {
       isSystemUser = true;
       group = "navdio";
@@ -227,6 +239,8 @@ in {
         LoadCredential = ["event-token:${cfg.tokenFile}"];
         RuntimeDirectory = "navdio";
         RuntimeDirectoryMode = "0700";
+        StateDirectory = "navdio";
+        StateDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 5;
         TimeoutStopSec = 15;

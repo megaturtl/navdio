@@ -54,6 +54,8 @@ class Config:
     replaygain: str = "track"
     max_listeners: int = 40
     mpd: str = "mpd"
+    stats_database: Path = Path("/var/lib/navdio/stats.sqlite3")
+    stats_trusted_proxies: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
 
     @classmethod
     def load(cls, filename):
@@ -74,6 +76,8 @@ class Config:
                 "replaygain",
                 "maxListeners",
                 "mpd",
+                "statsDatabase",
+                "statsTrustedProxies",
             }:
                 raise ValueError
             address = data.get("listenAddress", "127.0.0.1")
@@ -104,6 +108,17 @@ class Config:
             runtime = path_value(data.get("runtimeDirectory", "/run/navdio"))
             if len(os.fsencode(runtime / "mpd.sock")) > 100 or runtime == Path("/"):
                 raise ValueError
+            stats_database = path_value(data.get("statsDatabase", "/var/lib/navdio/stats.sqlite3"))
+            if stats_database == Path("/"):
+                raise ValueError
+            proxies = data.get("statsTrustedProxies", [])
+            if not isinstance(proxies, list) or any(
+                not isinstance(value, str) for value in proxies
+            ):
+                raise ValueError
+            stats_trusted_proxies = tuple(
+                ipaddress.ip_network(value, strict=False) for value in proxies
+            )
             bitrate = integer(data.get("bitrateKbps", 32), 6, 510)
             listeners = integer(data.get("maxListeners", 40), 1, 1024)
             replaygain = data.get("replaygain", "track")
@@ -129,6 +144,8 @@ class Config:
                 replaygain=replaygain,
                 max_listeners=listeners,
                 mpd=mpd,
+                stats_database=stats_database,
+                stats_trusted_proxies=stats_trusted_proxies,
             )
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, RecursionError):
             raise RadioError("Invalid or unavailable companion configuration") from None

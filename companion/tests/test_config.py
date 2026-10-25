@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import tempfile
 import unittest
@@ -32,6 +33,25 @@ class ConfigTests(unittest.TestCase):
     def test_explicit_ipv6_address(self):
         self.assertEqual(self.load(listenAddress="::1").listen_address, "::1")
 
+    def test_statistics_defaults_and_explicit_settings(self):
+        config = self.load()
+        self.assertEqual(config.stats_database, Path("/var/lib/navdio/stats.sqlite3"))
+        self.assertEqual(config.stats_trusted_proxies, ())
+        database = self.root / "private" / "statistics.sqlite3"
+        config = self.load(
+            statsDatabase=str(database),
+            statsTrustedProxies=["127.0.0.1/32", "192.0.2.19/24", "2001:db8::1/64"],
+        )
+        self.assertEqual(config.stats_database, database)
+        self.assertEqual(
+            config.stats_trusted_proxies,
+            (
+                ipaddress.ip_network("127.0.0.1/32"),
+                ipaddress.ip_network("192.0.2.0/24"),
+                ipaddress.ip_network("2001:db8::/64"),
+            ),
+        )
+
     def test_invalid_config_is_credential_and_path_free(self):
         cases = [
             {"unknown": True},
@@ -56,6 +76,25 @@ class ConfigTests(unittest.TestCase):
             {"mpd": "mpd --arg"},
             {"mpd": "relative/bin/mpd"},
         ]
+        cases.extend(
+            {"statsDatabase": value}
+            for value in ("/", "relative", "", None, 123, "/tmp/bad\npath", "/tmp/bad\x00path")
+        )
+        cases.extend(
+            {"statsTrustedProxies": value}
+            for value in (
+                None,
+                "127.0.0.1",
+                {},
+                [None],
+                [123],
+                ["localhost"],
+                ["127.0.0.1/33"],
+                ["2001:db8::/129"],
+                ["127.0.0.1:8750"],
+                ["127.0.0.1,192.0.2.1"],
+            )
+        )
         for changes in cases:
             with self.subTest(changes=changes):
                 with self.assertRaises(RadioError) as error:

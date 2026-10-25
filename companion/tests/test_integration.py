@@ -21,6 +21,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from navdio.stats import read_statistics
+
 PROJECT = Path(__file__).resolve().parent.parent
 COMPANION = os.environ.get("NAVDIO_COMPANION_EXE")
 PLUGIN = os.environ.get("NAVDIO_PLUGIN_ARCHIVE")
@@ -147,6 +149,7 @@ class IntegrationTests(unittest.TestCase):
                             "libraries": {"1": str(music)},
                             "tokenFile": str(token_file),
                             "runtimeDirectory": str(root / "runtime"),
+                            "statsDatabase": str(root / "stats.sqlite3"),
                             "mpd": shutil.which("mpd"),
                             "maxListeners": 1,
                         }
@@ -316,6 +319,20 @@ class IntegrationTests(unittest.TestCase):
                         request(origin + "/radio/stream")
                     with limited.exception:
                         self.assertEqual(limited.exception.code, 503)
+
+                    def stream_statistics():
+                        snapshot = read_statistics(root / "stats.sqlite3")
+                        return (
+                            snapshot
+                            if snapshot["periods"]["all_time"]["audio_bytes"] >= 4
+                            else None
+                        )
+
+                    snapshot = eventually(stream_statistics, "committed stream statistics")
+                    self.assertEqual(snapshot["connected"], 1)
+                    self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+                    self.assertGreaterEqual(snapshot["periods"]["all_time"]["audio_bytes"], 4)
+                    self.assertGreater(snapshot["periods"]["all_time"]["listened_ms"], 0)
                 # MPD sends Ogg pages about once a second. Allow time to detect
                 # the disconnected listener before the decoder connects.
                 time.sleep(2)

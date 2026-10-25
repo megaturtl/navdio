@@ -1,23 +1,29 @@
 import base64
 import http.client
 import io
+import ipaddress
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 from PIL import Image
 
 from navdio.config import Config
 from navdio.http import RadioServer
 from navdio.state import RadioState
+from navdio.stats import Statistics, read_statistics
 
 
 class SourceServer(ThreadingHTTPServer):
@@ -26,34 +32,55 @@ class SourceServer(ThreadingHTTPServer):
     def __init__(self):
         self.request_headers: list[dict[str, str]] = []
         self.stopping = threading.Event()
+        self.payload: bytes | None = None
+        self.next_payload = b""
+        self.continue_stream = threading.Event()
+        self.release = threading.Event()
+        self.status = 200
         super().__init__(("127.0.0.1", 0), SourceHandler)
 
 
 class SourceHandler(BaseHTTPRequestHandler):
-    server: SourceServer
+    @property
+    def source(self) -> SourceServer:
+        return cast(SourceServer, self.server)
 
     def log_message(self, format: str, *args: object) -> None:
         pass
 
     def do_GET(self):
-        self.server.request_headers.append(dict(self.headers))
-        self.send_response(200)
+        self.source.request_headers.append(dict(self.headers))
+        self.send_response(self.source.status)
         self.send_header("Content-Type", "audio/ogg")
         self.end_headers()
         try:
-            while not self.server.stopping.wait(0.01):
+            if self.source.status != 200:
+                return
+            if self.source.payload is not None:
+                self.wfile.write(self.source.payload)
+                if self.source.next_payload:
+                    if not self.source.continue_stream.wait(5):
+                        return
+                    self.wfile.write(self.source.next_payload)
+                self.source.release.wait(5)
+                return
+            while not self.source.stopping.wait(0.01):
                 self.wfile.write(b"OggS" + bytes(128))
         except OSError:
             pass
 
 
-class HTTPTests(unittest.TestCase):
+class HTTPHarness(unittest.TestCase):
+    max_listeners = 1
+    audio_payload: bytes | None = None
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "song.wav").write_bytes(b"fixture")
         self.source = SourceServer()
+        self.source.payload = self.audio_payload
         self.source_thread = threading.Thread(
             target=self.source.serve_forever, kwargs={"poll_interval": 0.01}
         )
@@ -66,10 +93,12 @@ class HTTPTests(unittest.TestCase):
             b"test-only-token",
             port=self.listener.getsockname()[1],
             source_port=self.source.server_port,
-            max_listeners=1,
+            max_listeners=self.max_listeners,
         )
         self.state = RadioState()
-        self.server = RadioServer(config, self.state, self.listener.dup())
+        self.database = self.root / "stats.sqlite3"
+        self.statistics = Statistics(self.database, flush_seconds=0.02)
+        self.server = RadioServer(config, self.state, self.listener.dup(), self.statistics)
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.01}
         )
@@ -83,8 +112,11 @@ class HTTPTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
         self.server.server_close()
+        self.statistics.close()
         self.listener.close()
         self.source.stopping.set()
+        self.source.release.set()
+        self.source.continue_stream.set()
         self.source.shutdown()
         self.source_thread.join(timeout=2)
         self.source.server_close()
@@ -95,6 +127,16 @@ class HTTPTests(unittest.TestCase):
         connection.request(method, path, body, headers or {})
         response = connection.getresponse()
         return connection, response
+
+    def snapshot(self, predicate):
+        deadline = time.monotonic() + 3
+        wake = threading.Event()
+        while time.monotonic() < deadline:
+            snapshot = read_statistics(self.database)
+            if predicate(snapshot):
+                return snapshot
+            wake.wait(0.01)
+        self.fail("Statistics snapshot did not reach the expected state")
 
     def publish(self, payload, **headers):
         body = json.dumps(payload).encode()
@@ -127,6 +169,8 @@ class HTTPTests(unittest.TestCase):
             "coverArt": base64.b64encode(cover.getvalue()).decode(),
         }
 
+
+class HTTPTests(HTTPHarness):
     def test_authentication_and_schema_failures_do_not_mutate(self):
         heartbeat = {"version": 1, "type": "heartbeat"}
         self.assertEqual(self.publish(heartbeat, Authorization="Bearer wrong").status, 401)
@@ -251,7 +295,7 @@ class HTTPTests(unittest.TestCase):
             listen_address="::1",
             port=listener.getsockname()[1],
         )
-        server = RadioServer(config, self.state, listener.dup())
+        server = RadioServer(config, self.state, listener.dup(), None)
         serving = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
         serving.start()
         connection = http.client.HTTPConnection("::1", server.server_port, timeout=2)
@@ -269,10 +313,12 @@ class HTTPTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
         self.server.server_close()
+        self.statistics.close()
+        self.statistics = Statistics(self.database, flush_seconds=0.02)
         with socket.socket() as impostor:
             with self.assertRaises(OSError):
                 impostor.bind(("127.0.0.1", config.port))
-        self.server = RadioServer(config, self.state, self.listener.dup())
+        self.server = RadioServer(config, self.state, self.listener.dup(), self.statistics)
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.01}
         )
@@ -282,6 +328,287 @@ class HTTPTests(unittest.TestCase):
         with socket.socket() as impostor:
             with self.assertRaises(OSError):
                 impostor.bind(("127.0.0.1", config.port))
+
+
+class HTTPStatisticsTests(HTTPHarness):
+    max_listeners = 2
+    audio_payload = b"OggS" + bytes(12284)
+
+    def test_exact_payload_totals_and_listener_limit(self):
+        responses = []
+        for _ in range(2):
+            _, response = self.request("GET", "/radio/stream")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(12288), self.audio_payload)
+            responses.append(response)
+        snapshot = self.snapshot(
+            lambda value: (
+                value["connected"] == 2 and value["periods"]["all_time"]["audio_bytes"] == 24576
+            )
+        )
+        for period in snapshot["periods"].values():
+            self.assertEqual((period["audio_bytes"], period["unique_ips"]), (24576, 1))
+        self.assertEqual(self.request("GET", "/radio/stream")[1].status, 503)
+        self.source.release.set()
+        for response in responses:
+            self.assertEqual(response.read(), b"")
+        snapshot = self.snapshot(lambda value: value["connected"] == 0)
+        self.assertEqual(snapshot["periods"]["all_time"]["audio_bytes"], 24576)
+        self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+        self.assertGreater(snapshot["periods"]["all_time"]["listened_ms"], 0)
+
+    def test_failed_upstream_setup_records_no_audio_or_listener(self):
+        with socket.socket() as unavailable:
+            unavailable.bind(("127.0.0.1", 0))
+            self.server.config = replace(
+                self.server.config, source_port=unavailable.getsockname()[1]
+            )
+            self.assertEqual(self.request("GET", "/radio/stream")[1].status, 503)
+        self.statistics.close()
+        snapshot = read_statistics(self.database)
+        self.assertEqual(snapshot["connected"], 0)
+        self.assertEqual(
+            snapshot["periods"]["all_time"],
+            {"audio_bytes": 0, "unique_ips": 0, "listened_ms": 0},
+        )
+
+    def test_rejected_upstream_records_no_audio_or_listener(self):
+        self.source.status = 503
+        self.assertEqual(self.request("GET", "/radio/stream")[1].status, 503)
+        self.statistics.close()
+        self.assertEqual(
+            read_statistics(self.database)["periods"]["all_time"],
+            {"audio_bytes": 0, "unique_ips": 0, "listened_ms": 0},
+        )
+
+    def test_empty_source_records_no_audio_or_listener(self):
+        self.source.payload = b""
+        self.source.release.set()
+        _, response = self.request("GET", "/radio/stream")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.read(), b"")
+        self.statistics.close()
+        self.assertEqual(
+            read_statistics(self.database)["periods"]["all_time"],
+            {"audio_bytes": 0, "unique_ips": 0, "listened_ms": 0},
+        )
+
+    def test_failed_first_downstream_write_records_no_audio_or_listener(self):
+        original_write = socket.socket.sendall
+        failed = threading.Event()
+
+        def fail_audio_write(writer, data):
+            if writer.getsockname()[1] == self.server.server_port and not data.startswith(b"HTTP/"):
+                failed.set()
+                raise BrokenPipeError
+            return original_write(writer, data)
+
+        with patch.object(socket.socket, "sendall", fail_audio_write):
+            _, response = self.request("GET", "/radio/stream")
+            self.assertEqual(response.status, 200)
+            self.assertTrue(failed.wait(2), "The fixture did not attempt its first audio write")
+            self.assertEqual(response.read(), b"")
+        self.statistics.close()
+        self.assertEqual(
+            read_statistics(self.database)["periods"]["all_time"],
+            {"audio_bytes": 0, "unique_ips": 0, "listened_ms": 0},
+        )
+
+    def test_disconnect_and_shutdown_clear_connected_listeners(self):
+        self.source.payload = None
+        streams = [self.request("GET", "/radio/stream") for _ in range(2)]
+        for _, response in streams:
+            self.assertTrue(response.read(132).startswith(b"OggS"))
+        self.snapshot(lambda value: value["connected"] == 2)
+        connection, response = streams[0]
+        response.close()
+        connection.close()
+        snapshot = self.snapshot(lambda value: value["connected"] == 1)
+        self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+        self.server.shutdown()
+        self.thread.join(timeout=2)
+        self.server.server_close()
+        self.assertFalse(self.thread.is_alive())
+        snapshot = self.snapshot(lambda value: value["connected"] == 0)
+        self.assertGreaterEqual(snapshot["periods"]["all_time"]["audio_bytes"], 264)
+        self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+        self.assertEqual(self.server.connections, set())
+        self.assertEqual(self.server.upstreams, set())
+
+    def stream_with_headers(self, headers):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        self.connections.append(connection)
+        connection.putrequest("GET", "/radio/stream")
+        for name, value in headers:
+            connection.putheader(name, value)
+        connection.endheaders()
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.read(12288), self.audio_payload)
+        return response
+
+    def test_untrusted_real_ip_and_forwarded_headers_are_ignored(self):
+        for address in ("198.51.100.10", "203.0.113.20"):
+            self.stream_with_headers(
+                [
+                    ("X-Real-IP", address),
+                    ("X-Forwarded-For", address),
+                    ("Forwarded", f"for={address}"),
+                ]
+            )
+        snapshot = self.snapshot(lambda value: value["connected"] == 2)
+        self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 sockets unavailable")
+    def test_mapped_peer_matches_ipv4_trusted_proxy_network(self):
+        listener = socket.socket(socket.AF_INET6)
+        self.addCleanup(listener.close)
+        try:
+            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            listener.bind(("::ffff:127.0.0.1", 0))
+            listener.listen(32)
+        except OSError:
+            self.skipTest("IPv4-mapped IPv6 loopback unavailable")
+        config = replace(
+            self.server.config,
+            listen_address="::ffff:127.0.0.1",
+            port=listener.getsockname()[1],
+            stats_trusted_proxies=(ipaddress.ip_network("127.0.0.1/32"),),
+        )
+        server = RadioServer(config, self.state, listener.dup(), self.statistics)
+        serving = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        serving.start()
+        responses = []
+        try:
+            for address in ("198.51.100.10", "203.0.113.20"):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+                self.connections.append(connection)
+                connection.request("GET", "/radio/stream", headers={"X-Real-IP": address})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.read(12288), self.audio_payload)
+                responses.append(response)
+            snapshot = self.snapshot(lambda value: value["connected"] == 2)
+            self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 2)
+        finally:
+            server.shutdown()
+            serving.join(timeout=2)
+            server.server_close()
+            for response in responses:
+                response.close()
+
+    def test_trusted_real_ip_distinguishes_normalized_addresses(self):
+        self.server.config = replace(
+            self.server.config, stats_trusted_proxies=(ipaddress.ip_network("127.0.0.1/32"),)
+        )
+        self.source.release.set()
+        for index, (address, unique_ips) in enumerate(
+            (("198.51.100.10", 1), ("::ffff:198.51.100.10", 1), ("203.0.113.20", 2)), 1
+        ):
+            with self.subTest(address=address):
+                response = self.stream_with_headers([("X-Real-IP", address)])
+                self.assertEqual(response.read(), b"")
+                snapshot = self.snapshot(
+                    lambda value, index=index: (
+                        value["connected"] == 0
+                        and value["periods"]["all_time"]["audio_bytes"] == index * 12288
+                    )
+                )
+                self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], unique_ips)
+
+    def test_invalid_trusted_headers_fall_back_to_peer(self):
+        self.server.config = replace(
+            self.server.config, stats_trusted_proxies=(ipaddress.ip_network("127.0.0.1/32"),)
+        )
+        self.source.release.set()
+        cases = (
+            [],
+            [("X-Real-IP", "")],
+            [("X-Real-IP", "198.51.100.10"), ("X-Real-IP", "203.0.113.20")],
+            [("X-Real-IP", "198.51.100.10, 203.0.113.20")],
+            [("X-Real-IP", "fe80::1%lo")],
+            [("X-Real-IP", "198.51.100.10:80")],
+            [("X-Real-IP", "[2001:db8::1]:80")],
+            [("X-Real-IP", "[2001:db8::1]")],
+            [("X-Real-IP", "not-an-address")],
+            [("X-Forwarded-For", "198.51.100.10"), ("Forwarded", "for=203.0.113.20")],
+        )
+        for index, headers in enumerate(cases, 1):
+            with self.subTest(headers=headers):
+                response = self.stream_with_headers(headers)
+                self.assertEqual(response.read(), b"")
+                snapshot = self.snapshot(
+                    lambda value, index=index: (
+                        value["connected"] == 0
+                        and value["periods"]["all_time"]["audio_bytes"] == index * 12288
+                    )
+                )
+                self.assertEqual(snapshot["periods"]["all_time"]["unique_ips"], 1)
+
+    def test_proxy_headers_do_not_affect_authentication_or_public_info(self):
+        self.server.config = replace(
+            self.server.config, stats_trusted_proxies=(ipaddress.ip_network("127.0.0.1/32"),)
+        )
+        headers = {
+            "X-Real-IP": "198.51.100.10",
+            "X-Forwarded-For": "203.0.113.20",
+            "Forwarded": "for=192.0.2.30",
+        }
+        heartbeat = {"version": 1, "type": "heartbeat"}
+        self.assertEqual(
+            self.publish(heartbeat, **headers, Authorization="Bearer wrong").status, 401
+        )
+        self.assertIsNone(self.state.last_event)
+        self.assertEqual(self.publish(heartbeat, **headers).status, 204)
+        _, response = self.request("GET", "/radio/info", headers=headers)
+        info = response.read().decode()
+        for address in headers.values():
+            self.assertNotIn(address, info)
+        self.assertEqual(
+            read_statistics(self.database)["periods"]["all_time"],
+            {"audio_bytes": 0, "unique_ips": 0, "listened_ms": 0},
+        )
+
+    def test_writer_failure_does_not_interrupt_audio_or_shutdown(self):
+        assert self.audio_payload is not None
+        self.source.next_payload = self.audio_payload
+        _, response = self.request("GET", "/radio/stream")
+        self.assertEqual(response.read(12288), self.audio_payload)
+        self.snapshot(
+            lambda value: (
+                value["connected"] == 1 and value["periods"]["all_time"]["audio_bytes"] == 12288
+            )
+        )
+        blocker = sqlite3.connect(self.database, timeout=1)
+        try:
+            with self.assertLogs("navdio.stats", level="WARNING") as warnings:
+                blocker.execute("BEGIN IMMEDIATE")
+                deadline = time.monotonic() + 3
+                wake = threading.Event()
+                while not warnings.records and time.monotonic() < deadline:
+                    wake.wait(0.01)
+                self.assertEqual(len(warnings.records), 1)
+                self.assertEqual(
+                    warnings.records[0].getMessage(),
+                    "Statistics unavailable; restart Navdio to resume collection",
+                )
+                self.source.continue_stream.set()
+                self.assertEqual(response.read(12288), self.audio_payload)
+                self.server.shutdown()
+                self.thread.join(timeout=2)
+                self.server.server_close()
+                self.statistics.close()
+                self.assertFalse(self.thread.is_alive())
+                self.assertEqual(self.server.connections, set())
+                self.assertEqual(len(warnings.records), 1)
+        finally:
+            blocker.rollback()
+            blocker.close()
+        stored = read_statistics(self.database)
+        stale = read_statistics(self.database, now=stored["updated_at"] + 16)
+        self.assertTrue(stale["stale"])
+        self.assertIsNone(stale["connected"])
+        self.assertEqual(stale["periods"]["all_time"]["audio_bytes"], 12288)
 
 
 ACTIVATION_CHILD = """

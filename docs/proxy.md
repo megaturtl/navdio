@@ -9,6 +9,8 @@ Expose only the three public GET routes.
 For an nginx host with a domain and TLS already configured, add these locations:
 
 ```nix
+services.navdio.statsTrustedProxies = ["127.0.0.1/32"];
+
 services.nginx.appendHttpConfig = ''
   limit_conn_zone navdio zone=navdio_public:1m;
 '';
@@ -26,6 +28,7 @@ services.nginx.virtualHosts."radio.example.org".locations = {
       limit_except GET { deny all; }
       proxy_http_version 1.1;
       proxy_set_header Connection "";
+      proxy_set_header X-Real-IP $remote_addr;
       proxy_buffering off;
       proxy_cache off;
       proxy_read_timeout 1d;
@@ -57,6 +60,10 @@ Never proxy the companion's entire port or expose MPD's HTTP port and control so
 The companion port includes the private `/_navdio/events` endpoint.
 CORS permits browser reads. It does not authorise private events.
 Use a specific allowed origin instead of `*` if needed.
+
+The stream location replaces `X-Real-IP` with the client's address so Navdio can count listener IPs behind nginx.
+Set `statsTrustedProxies` to the addresses of proxies that connect directly to Navdio, using `127.0.0.1/32` for this example.
+With an empty trust list, every listener behind nginx counts toward nginx's IP address.
 
 The aggregate limit permits 52 public requests at once, including streams, info, and cover.
 The default companion permits 56 requests, which leaves four slots for private events.
@@ -96,12 +103,29 @@ Apply the aggregate public-request limit on the source nginx.
 At public ingress, allow only GET requests and set CORS headers on stream, info, and cover.
 When an upstream already sends CORS headers, hide them before adding the public header to avoid duplicates.
 
+At the public edge, overwrite the stream's client-IP header:
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+```
+
+On the source stream location, preserve that header after restricting access to the ingress VPN IP:
+
+```nginx
+proxy_set_header X-Real-IP $http_x_real_ip;
+```
+
+Keep `services.navdio.statsTrustedProxies = ["127.0.0.1/32"];` when source nginx connects through IPv4 loopback.
+The source location must remain restricted to the ingress VPN IP, since it passes the edge's client address through to Navdio.
+Navdio accepts a single valid `X-Real-IP` from trusted proxies and uses the socket address for other requests.
+This setting controls the address used for statistics, leaving authentication and rate limits unchanged.
+
 ## Traffic and playback
 
 `maxListeners` limits companion stream connections, including each listener behind nginx.
 For example, allow two streams per IP and limit new stream requests to 2/s with a burst of four.
 Set separate request limits for info and cover.
-The companion does not trust forwarded client-IP headers. Apply per-IP limits at public ingress.
+Apply per-IP limits at public ingress. Statistics proxy trust does not change rate-limit identities.
 
 At 40 listeners and 32 kbps, encoded audio uses about 1.28 Mbps, plus protocol overhead and VBR variation.
 Connection and request limits do not enforce a strict shared bandwidth cap.
