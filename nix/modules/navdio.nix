@@ -51,7 +51,7 @@ in {
       defaultText = lib.literalExpression "pkgs.callPackage ../packages/plugin.nix { }";
       description = ''
         The Navdio plugin package to install through
-        {option}`services.navidrome.plugins`.
+        {option}`services.navidrome.withPlugins`.
       '';
     };
     username = lib.mkOption {
@@ -191,7 +191,7 @@ in {
         message = "Automatic plugin setup connects to 127.0.0.1. listenAddress must accept IPv4 loopback.";
       }
     ];
-    services.navidrome.plugins = [cfg.pluginPackage];
+    services.navidrome.withPlugins = _: [cfg.pluginPackage];
     services.navidrome.settings.Plugins.Enabled = true;
     users.users.navdio = {
       isSystemUser = true;

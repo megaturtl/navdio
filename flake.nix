@@ -104,7 +104,7 @@
               pkgs.ffmpeg-headless
             ];
             NAVDIO_COMPANION_EXE = "${self.packages.${system}.navdio}/bin/navdio";
-            NAVDIO_PLUGIN_ARCHIVE = "${self.packages.${system}.plugin}/share/navdio/navdio.ndp";
+            NAVDIO_PLUGIN_ARCHIVE = "${self.packages.${system}.plugin}/share/plugins/navdio.ndp";
           }
           ''
             export PYTHONPATH=${self}/companion/src PYTHONDONTWRITEBYTECODE=1

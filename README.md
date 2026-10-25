@@ -44,7 +44,7 @@ Add the flake and import its module. For a local checkout:
 ```
 
 Replace the path with your checkout or repository URL.
-Use nixpkgs with `services.navidrome.plugins` and Navidrome 0.64.2 or newer.
+Use nixpkgs with `services.navidrome.withPlugins` and Navidrome 0.64.2 or newer.
 Local path inputs use locked snapshots.
 After source changes, run `nix flake update navdio` in the consuming flake.
 
@@ -86,7 +86,7 @@ With sops-nix, add both services to the secret's `restartUnits`.
 
 The module:
 
-- Installs the plugin through `services.navidrome.plugins`.
+- Installs the plugin through `services.navidrome.withPlugins`.
 - Reserves the companion HTTP port through `navdio.socket`, including during companion restarts.
 - Starts the companion and MPD with read-only library access.
 - Configures and enables the plugin through Navidrome's CLI before Navidrome starts.

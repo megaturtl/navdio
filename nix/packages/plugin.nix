@@ -17,16 +17,12 @@ buildGoModule {
   '';
   installPhase = ''
     runHook preInstall
-    mkdir -p bundle "$out/share/navdio"
+    mkdir -p bundle "$out/share/plugins"
     cp plugin.wasm manifest.json bundle/
     touch -t 198001010000 bundle/*
-    (cd bundle && zip -X "$out/share/navdio/navdio.ndp" manifest.json plugin.wasm)
+    (cd bundle && zip -X "$out/share/plugins/navdio.ndp" manifest.json plugin.wasm)
     runHook postInstall
   '';
-  passthru = {
-    isNavidromePlugin = true;
-    bundleName = "navdio";
-  };
   meta = {
     description = "Navidrome playback-event plugin for Navdio";
     platforms = lib.platforms.linux;
