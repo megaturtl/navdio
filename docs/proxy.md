@@ -90,6 +90,8 @@ For example, the public proxy can shorten the route paths:
 Return 404 for all other public paths.
 Clients fetch artwork from `/cover` directly in this example.
 Info does not include a cover URL.
+Preserve query strings when forwarding these routes; `/cover?t=...` must reach `/radio/cover?t=...`.
+The companion ignores query strings when routing public GET requests.
 
 Two upstream settings matter:
 

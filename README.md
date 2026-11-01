@@ -138,6 +138,8 @@ Bitrate and listener limits give an approximate bandwidth budget, not a strict t
 | `GET /radio/cover` | 50×50 JPEG, or 404 |
 
 Fetch artwork from `/radio/cover` directly. Info does not include a cover URL.
+Public GET routes ignore query strings, so `/radio/cover?t=${Date.now()}` works for cache busting.
+Set the image's `src` again when it should refresh; a timestamp URL does not refresh itself.
 
 Track changes, resume, and natural repeats start at the reported position.
 Mid-song seeks, clock drift, and new listeners do not reposition the shared player.

@@ -248,18 +248,19 @@ class RadioHandler(BaseHTTPRequestHandler):
         self.reply(204)
 
     def do_GET(self):
-        if self.path == "/radio/info":
+        path = self.path.split("?", 1)[0]
+        if path == "/radio/info":
             body = json.dumps(
                 self.radio.state.info(), ensure_ascii=False, separators=(",", ":")
             ).encode("utf-8")
             self.reply(200, body)
-        elif self.path == "/radio/cover":
+        elif path == "/radio/cover":
             cover = self.radio.state.cover()
             if cover:
                 self.reply(200, cover, "image/jpeg")
             else:
                 self.reply(404)
-        elif self.path == "/radio/stream":
+        elif path == "/radio/stream":
             self.stream()
         else:
             self.reply(404)

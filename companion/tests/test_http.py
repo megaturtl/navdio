@@ -212,20 +212,27 @@ class HTTPTests(HTTPHarness):
         self.assertEqual(self.publish(self.payload()).status, 204)
         observation, revision = self.state.desired()
         self.state.publish(observation, revision)
-        _, response = self.request("GET", "/radio/info")
-        self.assertEqual(response.getheader("Cache-Control"), "no-store")
-        info = json.loads(response.read())
-        self.assertNotIn("coverArtUrl", info)
-        self.assertNotIn("private", json.dumps(info))
-        _, response = self.request("GET", "/radio/cover")
-        self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
-        with Image.open(io.BytesIO(response.read())) as image:
-            self.assertEqual(image.size, (50, 50))
-        for path in ("/radio/info?token=secret", "/radio/info/", "/_navdio/events", "/healthz"):
+        for path in ("/radio/info", "/radio/info?t=1700000000000"):
+            with self.subTest(path=path):
+                _, response = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                info = json.loads(response.read())
+                self.assertNotIn("coverArtUrl", info)
+                self.assertNotIn("private", json.dumps(info))
+        for path in ("/radio/cover", "/radio/cover?t=1700000000000"):
+            with self.subTest(path=path):
+                _, response = self.request("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                with Image.open(io.BytesIO(response.read())) as image:
+                    self.assertEqual(image.size, (50, 50))
+        for path in ("/radio/info/", "/radio/cover/extra?t=1", "/_navdio/events", "/healthz?t=1"):
             self.assertEqual(self.request("GET", path)[1].status, 404)
 
     def test_icy_is_never_negotiated_and_listener_slot_is_released(self):
-        first, response = self.request("GET", "/radio/stream", headers={"Icy-MetaData": "1"})
+        first, response = self.request("GET", "/radio/stream?t=1", headers={"Icy-MetaData": "1"})
         self.assertEqual(response.status, 200)
         self.assertEqual(response.getheader("Content-Type"), "audio/ogg")
         self.assertIsNone(response.getheader("icy-metaint"))
