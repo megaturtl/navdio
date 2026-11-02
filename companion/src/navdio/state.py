@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import math
@@ -9,7 +10,7 @@ import threading
 import time
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -85,6 +86,15 @@ class Track:
     album: str | None
     duration_ms: int
     cover: bytes | None = None
+    bpm: int | None = None
+    genres: tuple[str, ...] = ()
+    play_count: int | None = None
+    cover_version: str | None = field(init=False)
+
+    def __post_init__(self):
+        object.__setattr__(
+            self, "cover_version", hashlib.sha256(self.cover).hexdigest() if self.cover else None
+        )
 
 
 @dataclass(frozen=True)
@@ -112,6 +122,10 @@ class Observation:
             "album": track.album if track else None,
             "positionMs": self.position(now),
             "durationMs": track.duration_ms if track else 0,
+            "bpm": track.bpm if track else None,
+            "genres": list(track.genres) if track else [],
+            "playCount": track.play_count if track else None,
+            "coverVersion": track.cover_version if track else None,
         }
 
 
@@ -200,6 +214,20 @@ def parse_event(body, libraries):
                 names.append(legacy)
             duration = int(number(song.get("duration"), 0, 10**9) * 1000)
             path = library_path(libraries, song.get("libraryId"), song.get("path"))
+            bpm = song.get("bpm")
+            if bpm is not None and (type(bpm) is not int or not 1 <= bpm <= 2**31 - 1):
+                raise ValueError
+            play_count = song.get("playCount")
+            if play_count is not None and (
+                type(play_count) is not int or not 0 <= play_count <= 2**63 - 1
+            ):
+                raise ValueError
+            genres = song.get("genres", [])
+            if not isinstance(genres, list) or len(genres) > 32:
+                raise ValueError
+            for genre in genres:
+                if not isinstance(genre, str) or not genre or len(genre.encode("utf-8")) > 256:
+                    raise ValueError
             track = Track(
                 (username, player_id, track_id, str(path)),
                 path,
@@ -208,6 +236,9 @@ def parse_event(body, libraries):
                 album,
                 duration,
                 cover,
+                bpm,
+                tuple(genres),
+                play_count,
             )
             position = min(position, duration)
         return PlaybackEvent((username, player_id), timestamp, state, position, rate, track)
@@ -348,10 +379,13 @@ class RadioState:
             now = self.clock()
             return self._public(now).info(now)
 
-    def cover(self):
+    def cover(self) -> tuple[str, bytes] | None:
         with self.lock:
             observation = self._public(self.clock())
-            return observation.track.cover if observation.track else None
+            track = observation.track
+            if track and track.cover and track.cover_version:
+                return track.cover_version, track.cover
+            return None
 
     def clear(self):
         with self.lock:

@@ -12,6 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from typing import cast
+from urllib.parse import parse_qs
 
 from .config import Config, RadioError
 from .state import MAX_BODY_BYTES, EventError, RadioState, parse_event
@@ -171,12 +172,20 @@ class RadioHandler(BaseHTTPRequestHandler):
     def send_error(self, code, message=None, explain=None):
         self.reply(code)
 
-    def reply(self, status, body=b"", content_type="application/json", extra=None):
+    def reply(
+        self,
+        status,
+        body=b"",
+        content_type="application/json",
+        extra=None,
+        *,
+        cache_control="no-store",
+    ):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        if status != 204:
+        if status not in (204, 304):
             self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("Connection", "close")
         self.send_header("X-Content-Type-Options", "nosniff")
         for key, value in (extra or {}).items():
@@ -248,22 +257,42 @@ class RadioHandler(BaseHTTPRequestHandler):
         self.reply(204)
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
         if path == "/radio/info":
             body = json.dumps(
                 self.radio.state.info(), ensure_ascii=False, separators=(",", ":")
             ).encode("utf-8")
             self.reply(200, body)
         elif path == "/radio/cover":
-            cover = self.radio.state.cover()
-            if cover:
-                self.reply(200, cover, "image/jpeg")
-            else:
-                self.reply(404)
+            self.cover(query)
         elif path == "/radio/stream":
             self.stream()
         else:
             self.reply(404)
+
+    def cover(self, query):
+        try:
+            versions = parse_qs(query, keep_blank_values=True, max_num_fields=32).get("v")
+        except ValueError:
+            self.reply(404)
+            return
+        artwork = self.radio.state.cover()
+        if artwork is None or (versions is not None and versions != [artwork[0]]):
+            self.reply(404)
+            return
+        version, body = artwork
+        etag = f'"{version}"'
+        validators = ",".join(self.headers.get_all("If-None-Match", []))
+        matches = any(
+            value.strip().removeprefix("W/") in (etag, "*") for value in validators.split(",")
+        )
+        self.reply(
+            304 if matches else 200,
+            b"" if matches else body,
+            "image/jpeg",
+            {"ETag": etag},
+            cache_control="no-cache",
+        )
 
     def statistics_address(self) -> str:
         peer = ipaddress.ip_address(self.client_address[0])

@@ -115,6 +115,10 @@ class IntegrationTests(unittest.TestCase):
                             "-metadata",
                             "album=Integration album",
                             "-metadata",
+                            "bpm=124",
+                            "-metadata",
+                            "genre=House",
+                            "-metadata",
                             "replaygain_track_gain=-6 dB",
                             "-metadata",
                             "replaygain_track_peak=0.5",
@@ -306,8 +310,15 @@ class IntegrationTests(unittest.TestCase):
                         "album",
                         "positionMs",
                         "durationMs",
+                        "bpm",
+                        "genres",
+                        "playCount",
+                        "coverVersion",
                     },
                 )
+                self.assertEqual(public["bpm"], 124)
+                self.assertEqual(public["genres"], ["House"])
+                self.assertEqual(public["playCount"], 0)
                 with Image.open(io.BytesIO(request(origin + "/radio/cover"))) as cover:
                     self.assertEqual((cover.size, cover.format), ((50, 50), "JPEG"))
                 with urllib.request.urlopen(

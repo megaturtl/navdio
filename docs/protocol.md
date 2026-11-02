@@ -32,6 +32,9 @@ Protocol version 1 accepts heartbeat and playback events:
     "album": "Album",
     "duration": 180.5,
     "libraryId": 1,
+    "bpm": 124,
+    "genres": ["House"],
+    "playCount": 42,
     "path": "Artist/Album/track.flac"
   },
   "coverArt": null
@@ -41,6 +44,12 @@ Protocol version 1 accepts heartbeat and playback events:
 `timestamp` is Navidrome's Unix report time in seconds. `positionMs` is the position at that time.
 States are `starting`, `playing`, `paused`, `stopped`, and `expired`.
 The companion uses monotonic time for deadlines and position estimates.
+
+Track metadata fields are optional. `bpm` is a positive 32-bit integer or null.
+`genres` contains at most 32 nonempty strings, each limited to 256 UTF-8 bytes.
+`playCount` is a nonnegative 64-bit integer or null.
+The plugin reads these fields through a user-scoped, exact-ID matcher lookup on each eligible playback report.
+A failed lookup does not prevent playback.
 
 Optional `coverArt` contains base64-encoded JPEG, PNG, or WebP data, limited to 32 KiB after decoding.
 The plugin requests size 50. The companion validates the image and converts it to a 50×50 JPEG.
@@ -83,11 +92,28 @@ Public position reports radio playback, not the latest client position.
   "artists": ["First", "Second"],
   "album": "Album",
   "positionMs": 12500,
-  "durationMs": 180500
+  "durationMs": 180500,
+  "bpm": 124,
+  "genres": ["House"],
+  "playCount": 42,
+  "coverVersion": "sha256-of-the-final-jpeg"
 }
 ```
 
 Public responses exclude native paths, user and player identifiers, credentials, and internal artwork URLs.
-Info and cover use `Cache-Control: no-store`.
-Idle info clears track fields. Missing artwork returns 404.
-Fetch artwork separately from `GET /radio/cover`. Info does not include a cover URL.
+Info uses `Cache-Control: no-store`. Idle info clears track fields.
+Missing BPM and play count use null. Missing genres use an empty array.
+`playCount` is the broadcast user's Navidrome count, not the number of radio listens.
+Zero is a known count. The count refreshes when the plugin receives another playback report.
+Navdio does not calculate BPM or submit plays.
+
+`coverVersion` identifies the final 50×50 JPEG by its SHA-256 hash. It is null without artwork.
+Fetch artwork separately from `GET /radio/cover?v=<coverVersion>`. Info does not include a cover URL.
+The companion returns 404 if the requested version is not current, including during a track change.
+It does not keep historical artwork. Unversioned cover requests remain supported.
+Other query parameters do not affect routing.
+
+Successful cover responses use `Cache-Control: no-cache` and a quoted content-hash `ETag`.
+A matching `If-None-Match` returns 304 without a body.
+Missing artwork and version mismatches return 404 with `Cache-Control: no-store`.
+The version check runs before conditional validation, so an old validator cannot hide a version mismatch.

@@ -134,12 +134,17 @@ Bitrate and listener limits give an approximate bandwidth budget, not a strict t
 | Endpoint | Response |
 | --- | --- |
 | `GET /radio/stream` | Shared Ogg/Opus audio |
-| `GET /radio/info` | State, track metadata, position, and duration |
-| `GET /radio/cover` | 50×50 JPEG, or 404 |
+| `GET /radio/info` | State, track metadata, BPM, genres, user play count, position, and cover version |
+| `GET /radio/cover?v=<coverVersion>` | Current 50×50 JPEG, or 404 |
 
-Fetch artwork from `/radio/cover` directly. Info does not include a cover URL.
-Public GET routes ignore query strings, so `/radio/cover?t=${Date.now()}` works for cache busting.
-Set the image's `src` again when it should refresh; a timestamp URL does not refresh itself.
+Info uses `Cache-Control: no-store`. Fetch artwork directly with its `coverVersion` from info.
+Cover responses use `Cache-Control: no-cache` and an `ETag`. Matching conditional requests return 304 without image data.
+A version mismatch returns 404 with `no-store`. Fetch info again instead of displaying another track's artwork.
+Unversioned cover requests still work. Info does not include a cover URL.
+
+BPM and genres come from Navidrome metadata. Missing BPM and play count use null. Missing genres use an empty array.
+`playCount` is the broadcast user's Navidrome count, not radio listener plays.
+Metadata refreshes on eligible playback reports. Navdio does not calculate BPM or record plays.
 
 Track changes, resume, and natural repeats start at the reported position.
 Mid-song seeks, clock drift, and new listeners do not reposition the shared player.
@@ -160,6 +165,9 @@ Navdio does not submit plays or scrobbles.
 Public responses exclude tokens, native paths, and user or player identifiers.
 MPD uses a private link to an open, validated music file.
 Replacing a library pathname cannot redirect that file handle outside its library.
+
+For browser access from another origin, configure CORS as shown in [the proxy guide](docs/proxy.md).
+Preserve query strings and cache headers. Do not add a CDN cache lifetime to info or cover.
 
 ## Radio statistics
 

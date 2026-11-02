@@ -146,6 +146,8 @@ class StateTests(unittest.TestCase):
         self.render()
         self.clock.now += 2
         info = self.state.info()
+        cover = self.state.cover()
+        assert cover is not None
         self.assertEqual(
             info,
             {
@@ -155,13 +157,62 @@ class StateTests(unittest.TestCase):
                 "album": "Album",
                 "positionMs": 3000,
                 "durationMs": 120000,
+                "bpm": None,
+                "genres": [],
+                "playCount": None,
+                "coverVersion": cover[0],
             },
         )
-        with Image.open(io.BytesIO(self.state.cover())) as image:
+        with Image.open(io.BytesIO(cover[1])) as image:
             self.assertEqual(image.format, "JPEG")
             self.assertEqual(image.size, (50, 50))
         self.assertNotIn("private", json.dumps(info))
         self.assertNotIn(str(self.root), json.dumps(info))
+
+    def test_metadata_refreshes_without_track_change_and_clears_on_idle(self):
+        song = self.payload()["track"]
+        self.state.accept(
+            self.event(track={**song, "bpm": 124, "genres": ["House"], "playCount": 0})
+        )
+        self.render()
+        info = self.state.info()
+        self.assertEqual((info["bpm"], info["genres"], info["playCount"]), (124, ["House"], 0))
+        self.state.accept(self.event(timestamp=1001, track={**song, "playCount": 1}))
+        self.render()
+        info = self.state.info()
+        self.assertEqual((info["bpm"], info["genres"], info["playCount"]), (None, [], 1))
+        self.clock.now += 15
+        info = self.state.info()
+        self.assertEqual(info["state"], "idle")
+        self.assertEqual(
+            (info["bpm"], info["genres"], info["playCount"], info["coverVersion"]),
+            (None, [], None, None),
+        )
+
+    def test_invalid_metadata_does_not_replace_playback(self):
+        self.state.accept(self.event())
+        self.render()
+        previous = self.state.info()
+        song = self.payload()["track"]
+        invalid = (
+            {"bpm": True},
+            {"bpm": 0},
+            {"bpm": 2**31},
+            {"bpm": 124.5},
+            {"playCount": False},
+            {"playCount": -1},
+            {"playCount": 2**63},
+            {"playCount": 1.5},
+            {"genres": None},
+            {"genres": "House"},
+            {"genres": [""]},
+            {"genres": ["x"] * 33},
+            {"genres": ["é" * 129]},
+        )
+        for metadata in invalid:
+            with self.subTest(metadata=metadata), self.assertRaises(EventError):
+                self.state.accept(self.event(timestamp=1001, track={**song, **metadata}))
+            self.assertEqual(self.state.info(), previous)
 
     def test_single_image_formats_produce_50_pixel_jpeg(self):
         for format in ("JPEG", "PNG", "WEBP"):

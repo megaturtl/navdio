@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import http.client
 import io
 import ipaddress
@@ -225,11 +226,70 @@ class HTTPTests(HTTPHarness):
                 _, response = self.request("GET", path)
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
-                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                self.assertEqual(response.getheader("Cache-Control"), "no-cache")
                 with Image.open(io.BytesIO(response.read())) as image:
                     self.assertEqual(image.size, (50, 50))
         for path in ("/radio/info/", "/radio/cover/extra?t=1", "/_navdio/events", "/healthz?t=1"):
             self.assertEqual(self.request("GET", path)[1].status, 404)
+
+    def test_versioned_cover_revalidation_and_track_change_race(self):
+        payload = self.payload()
+        payload["track"].update(bpm=124, genres=["House"], playCount=0)
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        _, response = self.request("GET", "/radio/info")
+        info = json.loads(response.read())
+        self.assertEqual((info["bpm"], info["genres"], info["playCount"]), (124, ["House"], 0))
+        version = info["coverVersion"]
+        path = f"/radio/cover?v={version}"
+        _, response = self.request("GET", path)
+        body = response.read()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(hashlib.sha256(body).hexdigest(), version)
+        etag = response.getheader("ETag")
+        self.assertEqual(etag, f'"{version}"')
+        for validator in (etag, f"W/{etag}", f'"other", {etag}', "*"):
+            with self.subTest(validator=validator):
+                _, response = self.request("GET", path, headers={"If-None-Match": validator})
+                self.assertEqual(response.status, 304)
+                self.assertEqual(response.read(), b"")
+                self.assertIsNone(response.getheader("Content-Length"))
+                self.assertEqual(response.getheader("ETag"), etag)
+                self.assertEqual(response.getheader("Cache-Control"), "no-cache")
+        for query in ("v=", "v=wrong", f"v={version}&v={version}"):
+            with self.subTest(query=query):
+                _, response = self.request("GET", f"/radio/cover?{query}")
+                self.assertEqual(response.status, 404)
+                self.assertEqual(response.getheader("Cache-Control"), "no-store")
+
+        payload["timestamp"] += 1
+        payload["track"]["id"] = "another-track"
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        self.assertEqual(self.state.info()["coverVersion"], version)
+
+        cover = io.BytesIO()
+        Image.new("RGB", (50, 50), "red").save(cover, format="PNG")
+        payload["timestamp"] += 1
+        payload["coverArt"] = base64.b64encode(cover.getvalue()).decode()
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        self.assertNotEqual(self.state.info()["coverVersion"], version)
+        _, response = self.request("GET", path, headers={"If-None-Match": etag})
+        self.assertEqual(response.status, 404)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+        _, response = self.request("GET", "/radio/cover", headers={"If-None-Match": etag})
+        self.assertEqual(response.status, 200)
+        self.assertNotEqual(response.read(), body)
+
+        payload["timestamp"] += 1
+        payload["coverArt"] = None
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        self.assertIsNone(self.state.info()["coverVersion"])
+        _, response = self.request("GET", "/radio/cover", headers={"If-None-Match": "*"})
+        self.assertEqual(response.status, 404)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
 
     def test_icy_is_never_negotiated_and_listener_slot_is_released(self):
         first, response = self.request("GET", "/radio/stream?t=1", headers={"Icy-MetaData": "1"})

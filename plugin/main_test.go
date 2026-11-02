@@ -27,12 +27,14 @@ func resetHostMocks(t *testing.T) {
 	host.CacheMock.Mock = mock.Mock{}
 	host.HTTPMock.Mock = mock.Mock{}
 	host.SchedulerMock.Mock = mock.Mock{}
+	host.MatcherMock.Mock = mock.Mock{}
 	host.SubsonicAPIMock.Mock = mock.Mock{}
 	t.Cleanup(func() {
 		pdk.PDKMock.AssertExpectations(t)
 		host.CacheMock.AssertExpectations(t)
 		host.HTTPMock.AssertExpectations(t)
 		host.SchedulerMock.AssertExpectations(t)
+		host.MatcherMock.AssertExpectations(t)
 		host.SubsonicAPIMock.AssertExpectations(t)
 	})
 }
@@ -78,6 +80,24 @@ func acceptPlayback(t *testing.T, inspect func(playbackEvent)) {
 		var event playbackEvent
 		if err := json.Unmarshal(req.Body, &event); err != nil {
 			t.Fatal(err)
+		}
+		var wire struct {
+			Track map[string]json.RawMessage `json:"track"`
+		}
+		if err := json.Unmarshal(req.Body, &wire); err != nil {
+			t.Fatal(err)
+		}
+		fields := []string{"id", "title", "album", "artist", "artists", "duration", "libraryId", "path", "bpm", "genres", "playCount"}
+		if len(wire.Track) != len(fields) {
+			t.Error("event track includes fields outside the metadata allowlist")
+		}
+		for _, field := range fields {
+			if _, ok := wire.Track[field]; !ok {
+				t.Errorf("event track lacks %s", field)
+			}
+		}
+		if bytes.Equal(wire.Track["genres"], []byte("null")) {
+			t.Error("genres must be an array, including when unavailable")
 		}
 		if event.Version != 1 || event.Type != "playback" {
 			t.Error("incorrect protocol version or event type")
@@ -184,6 +204,8 @@ func TestCoverFailureDoesNotStopPlayback(t *testing.T) {
 	resetHostMocks(t)
 	configure(t, "alice", "")
 	key := coverCacheKey("alice", "track-1")
+	host.MatcherMock.On("MatchSongs", []types.SongRef{{ID: "track-1"}}, host.MatchOptions{Username: "alice"}).
+		Return([]*types.Track(nil), errors.New("metadata unavailable")).Once()
 	host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil)
 	host.CacheMock.On("GetBytes", key).Return(nil, false, errors.New("cache unavailable"))
 	host.SubsonicAPIMock.On("CallRaw", mock.Anything).Return("", nil, errors.New("cover unavailable"))
@@ -352,6 +374,8 @@ func TestOptionalCoverIsDroppedBeforeRejectingLargeMetadata(t *testing.T) {
 	}
 	host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil).Once()
 	host.CacheMock.On("GetBytes", coverCacheKey("alice", "track-1")).Return(cover, true, nil).Once()
+	host.MatcherMock.On("MatchSongs", []types.SongRef{{ID: "track-1"}}, host.MatchOptions{Username: "alice"}).
+		Return([]*types.Track(nil), nil).Once()
 	report := exampleReport()
 	report.Track.Title = strings.Repeat("x", 60000)
 	acceptPlayback(t, func(event playbackEvent) {
@@ -361,5 +385,143 @@ func TestOptionalCoverIsDroppedBeforeRejectingLargeMetadata(t *testing.T) {
 	})
 	if err := (source{}).PlaybackReport(report); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPlaybackMetadataUsesExactUserScopedTrackAndRefreshes(t *testing.T) {
+	resetHostMocks(t)
+	configure(t, "alice", "Feishin")
+	host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil).Twice()
+	host.CacheMock.On("GetBytes", coverCacheKey("alice", "track-1")).Return(nil, true, nil).Twice()
+	bpm := int32(123)
+	for _, count := range []int64{0, 7} {
+		host.MatcherMock.On("MatchSongs", []types.SongRef{{ID: "track-1"}}, host.MatchOptions{Username: "alice"}).
+			Return([]*types.Track{{
+				ID: "track-1", BPM: &bpm, Genres: []string{"Jazz", "Soul"}, PlayCount: count,
+				Title: "lookup title must not replace report", Path: "/private/path",
+				Comment: "private comment", Tags: map[string][]string{"private": {"secret"}},
+			}}, nil).Once()
+		acceptPlayback(t, func(event playbackEvent) {
+			if event.State != "playing" || event.Track.ID != "track-1" || event.Track.Title != "Song" ||
+				event.Track.Path != "Artist/Album/song.flac" || event.Track.BPM == nil || *event.Track.BPM != 123 ||
+				event.Track.PlayCount == nil || *event.Track.PlayCount != count ||
+				strings.Join(event.Track.Genres, ",") != "Jazz,Soul" {
+				t.Errorf("metadata did not preserve the report and user play count: %+v", event.Track)
+			}
+		})
+		if err := (source{}).PlaybackReport(exampleReport()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestUnavailableMetadataDoesNotChangePlayback(t *testing.T) {
+	for _, scenario := range []string{"error", "empty", "nil", "mismatch", "missing", "extra"} {
+		t.Run(scenario, func(t *testing.T) {
+			resetHostMocks(t)
+			configure(t, "alice", "")
+			bpm := int32(120)
+			matches := []*types.Track{{ID: "track-1", BPM: &bpm, Genres: []string{"Private genre"}, PlayCount: 99}}
+			var lookupErr error
+			switch scenario {
+			case "error":
+				lookupErr = errors.New("private lookup error")
+			case "empty":
+				matches = nil
+			case "nil":
+				matches[0] = nil
+			case "mismatch":
+				matches[0].ID = "other-track"
+			case "missing":
+				matches[0].Missing = true
+			case "extra":
+				matches = append(matches, matches[0])
+			}
+			host.MatcherMock.On("MatchSongs", []types.SongRef{{ID: "track-1"}}, host.MatchOptions{Username: "alice"}).
+				Return(matches, lookupErr).Once()
+			host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil).Once()
+			host.CacheMock.On("GetBytes", coverCacheKey("alice", "track-1")).Return(nil, true, nil).Once()
+			acceptPlayback(t, func(event playbackEvent) {
+				if event.State != "playing" || event.Track.Title != "Song" || event.Track.BPM != nil ||
+					event.Track.PlayCount != nil || event.Track.Genres == nil || len(event.Track.Genres) != 0 {
+					t.Errorf("unavailable metadata changed playback or leaked lookup fields: %+v", event)
+				}
+			})
+			if err := (source{}).PlaybackReport(exampleReport()); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMetadataBoundsPreservePlayback(t *testing.T) {
+	for _, scenario := range []string{"invalid", "bounded", "event-limit"} {
+		t.Run(scenario, func(t *testing.T) {
+			resetHostMocks(t)
+			configure(t, "alice", "")
+			bpm := int32(-1)
+			matched := &types.Track{
+				ID: "track-1", BPM: &bpm, PlayCount: -1,
+				Genres: []string{"", strings.Repeat("x", 257), string([]byte{0xff}), "Jazz"},
+			}
+			report := exampleReport()
+			if scenario != "invalid" {
+				matched.Genres = make([]string, 100)
+				for i := range matched.Genres {
+					matched.Genres[i] = strings.Repeat("\x00", 256)
+				}
+			}
+			if scenario == "event-limit" {
+				report.Track.Title = strings.Repeat("x", 60000)
+			}
+			host.MatcherMock.On("MatchSongs", []types.SongRef{{ID: "track-1"}}, host.MatchOptions{Username: "alice"}).
+				Return([]*types.Track{matched}, nil).Once()
+			host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil).Once()
+			host.CacheMock.On("GetBytes", coverCacheKey("alice", "track-1")).Return(nil, true, nil).Once()
+			acceptPlayback(t, func(event playbackEvent) {
+				if event.State != "playing" || event.Track.Title != report.Track.Title ||
+					event.Track.BPM != nil || event.Track.PlayCount != nil {
+					t.Error("invalid metadata changed the playback report")
+				}
+				switch scenario {
+				case "invalid":
+					if strings.Join(event.Track.Genres, ",") != "Jazz" {
+						t.Error("invalid genres were not omitted")
+					}
+				case "bounded":
+					if len(event.Track.Genres) != 32 {
+						t.Error("genre count was not bounded")
+					}
+				case "event-limit":
+					if len(event.Track.Genres) != 0 {
+						t.Error("optional metadata broke the event size limit")
+					}
+				}
+			})
+			if err := (source{}).PlaybackReport(report); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTerminalReportsDoNotLookUpMetadata(t *testing.T) {
+	for _, state := range []string{"stopped", "expired"} {
+		t.Run(state, func(t *testing.T) {
+			resetHostMocks(t)
+			configure(t, "alice", "")
+			host.SchedulerMock.On("ScheduleRecurring", "@every 5s", "", heartbeatScheduleID).Return(heartbeatScheduleID, nil).Once()
+			report := exampleReport()
+			report.State = state
+			acceptPlayback(t, func(event playbackEvent) {
+				if event.State != state || event.Track.BPM != nil || event.Track.PlayCount != nil || len(event.Track.Genres) != 0 {
+					t.Error("terminal report unexpectedly acquired metadata")
+				}
+			})
+			if err := (source{}).PlaybackReport(report); err != nil {
+				t.Fatal(err)
+			}
+			host.MatcherMock.AssertNotCalled(t, "MatchSongs", mock.Anything, mock.Anything)
+		})
 	}
 }

@@ -90,8 +90,10 @@ For example, the public proxy can shorten the route paths:
 Return 404 for all other public paths.
 Clients fetch artwork from `/cover` directly in this example.
 Info does not include a cover URL.
-Preserve query strings when forwarding these routes; `/cover?t=...` must reach `/radio/cover?t=...`.
-The companion ignores query strings when routing public GET requests.
+Preserve query strings when forwarding these routes. `/cover?v=...` must reach `/radio/cover?v=...`.
+Forward `If-None-Match` and preserve the companion's `ETag` and `Cache-Control` response headers.
+Info uses `no-store`. Successful covers use `no-cache`, which permits storage but requires validation before reuse.
+Do not replace these headers with a fixed proxy or CDN cache lifetime.
 
 Two upstream settings matter:
 

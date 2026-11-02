@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/navidrome/navidrome/plugins/pdk/go/host"
 	"github.com/navidrome/navidrome/plugins/pdk/go/lifecycle"
@@ -47,6 +48,9 @@ type eventTrack struct {
 	Duration  float32           `json:"duration"`
 	LibraryID int32             `json:"libraryId"`
 	Path      string            `json:"path"`
+	BPM       *int32            `json:"bpm"`
+	Genres    []string          `json:"genres"`
+	PlayCount *int64            `json:"playCount"`
 }
 
 type playbackEvent struct {
@@ -195,15 +199,17 @@ func (source) PlaybackReport(req scrobbler.PlaybackReportRequest) error {
 		Track: eventTrack{
 			ID: track.ID, Title: track.Title, Album: track.Album, Artist: track.Artist,
 			Artists: track.Artists, Duration: track.Duration, LibraryID: track.LibraryID, Path: track.Path,
+			Genres: []string{},
 		},
 	}
 	if event.State != "stopped" && event.State != "expired" && (track.LibraryID <= 0 || track.Path == "") {
 		// Navidrome withholds paths outside granted libraries. Stop the session
 		// so its previous, permitted track does not continue.
 		event.State = "stopped"
-		event.Track = eventTrack{}
+		event.Track = eventTrack{Genres: []string{}}
 	}
 	if event.State != "stopped" && event.State != "expired" {
+		enrichTrack(&event.Track, cfg.username)
 		event.CoverArt = coverArt(req.Username, track.ID)
 	}
 	body, err := json.Marshal(event)
@@ -217,10 +223,41 @@ func (source) PlaybackReport(req scrobbler.PlaybackReportRequest) error {
 			return errors.New("navdio: could not encode playback report")
 		}
 	}
+	if len(body) > maxEventBytes {
+		event.Track.BPM, event.Track.PlayCount = nil, nil
+		event.Track.Genres = []string{}
+		body, err = json.Marshal(event)
+		if err != nil {
+			return errors.New("navdio: could not encode playback report")
+		}
+	}
 	if err := postEvent(cfg, body); err != nil {
 		return err
 	}
 	return scheduleErr
+}
+
+func enrichTrack(track *eventTrack, username string) {
+	track.Genres = []string{}
+	matches, err := host.MatcherMatchSongs([]types.SongRef{{ID: track.ID}}, host.MatchOptions{Username: username})
+	if err != nil || len(matches) != 1 || matches[0] == nil || matches[0].ID != track.ID || matches[0].Missing {
+		return
+	}
+	match := matches[0]
+	if match.BPM != nil && *match.BPM > 0 {
+		track.BPM = match.BPM
+	}
+	if match.PlayCount >= 0 {
+		track.PlayCount = &match.PlayCount
+	}
+	for _, genre := range match.Genres {
+		if len(track.Genres) == 32 {
+			break
+		}
+		if len(genre) > 0 && len(genre) <= 256 && utf8.ValidString(genre) {
+			track.Genres = append(track.Genres, genre)
+		}
+	}
 }
 
 func validReport(req scrobbler.PlaybackReportRequest) bool {

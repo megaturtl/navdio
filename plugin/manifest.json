@@ -5,11 +5,14 @@
   "description": "Broadcast a selected Navidrome user's playback through a local Navdio companion.",
   "permissions": {
     "users": {
-      "reason": "Read playback for the selected user and request cover art as that user. Grant only the broadcast user."
+      "reason": "Read playback, cover art, and the play count for the selected user. Grant only the broadcast user."
     },
     "library": {
       "reason": "Read the relative file path and library ID for playback reports. Grant only broadcast libraries.",
       "filesystem": true
+    },
+    "matcher": {
+      "reason": "Read BPM, genres, and the selected user's play count for the reported track."
     },
     "subsonicapi": {
       "reason": "Read a 50-pixel cover using the internal getCoverArt endpoint."
