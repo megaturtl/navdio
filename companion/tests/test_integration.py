@@ -314,6 +314,7 @@ class IntegrationTests(unittest.TestCase):
                         "genres",
                         "playCount",
                         "coverVersion",
+                        "lastPlayedAt",
                     },
                 )
                 self.assertEqual(public["bpm"], 124)
@@ -392,10 +393,13 @@ class IntegrationTests(unittest.TestCase):
                 )
                 stop(server)
                 eventually(lambda: info()["state"] == "idle", "source-loss expiry", timeout=22)
-                with self.assertRaises(urllib.error.HTTPError) as missing:
-                    request(origin + "/radio/cover")
-                with missing.exception:
-                    self.assertEqual(missing.exception.code, 404)
+                cached = info()
+                self.assertEqual(cached["title"], songs[1]["title"])
+                self.assertIsNotNone(cached["lastPlayedAt"])
+                with Image.open(
+                    io.BytesIO(request(origin + f"/radio/cover?v={cached['coverVersion']}"))
+                ) as cover:
+                    self.assertEqual((cover.size, cover.format), ((50, 50), "JPEG"))
             except BaseException:
                 for log in logs:
                     log.flush()

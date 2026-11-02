@@ -291,6 +291,28 @@ class HTTPTests(HTTPHarness):
         self.assertEqual(response.status, 404)
         self.assertEqual(response.getheader("Cache-Control"), "no-store")
 
+    def test_last_played_metadata_and_cover_survive_stop(self):
+        payload = self.payload()
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        _, response = self.request("GET", "/radio/info")
+        live = json.loads(response.read())
+        payload.update(state="stopped", track=None, timestamp=payload["timestamp"] + 1)
+        self.assertEqual(self.publish(payload).status, 204)
+        self.state.publish(*self.state.desired())
+        _, response = self.request("GET", "/radio/info")
+        idle = json.loads(response.read())
+        self.assertEqual(idle["state"], "idle")
+        self.assertEqual(idle["title"], live["title"])
+        self.assertEqual(idle["lastPlayedAt"], live["lastPlayedAt"])
+        self.assertEqual(idle["coverVersion"], live["coverVersion"])
+        self.assertEqual(idle["positionMs"], 0)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+        _, response = self.request("GET", f"/radio/cover?v={idle['coverVersion']}")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(hashlib.sha256(response.read()).hexdigest(), idle["coverVersion"])
+        self.assertIsNone(self.state.desired()[0].track)
+
     def test_icy_is_never_negotiated_and_listener_slot_is_released(self):
         first, response = self.request("GET", "/radio/stream?t=1", headers={"Icy-MetaData": "1"})
         self.assertEqual(response.status, 200)
@@ -336,7 +358,7 @@ class HTTPTests(HTTPHarness):
         self.assertEqual(connection.getresponse().status, 400)
         self.assertIsNone(self.state.last_event)
 
-    def test_expired_source_clears_cover_and_info(self):
+    def test_expired_source_retains_last_played_without_live_playback(self):
         self.assertEqual(self.publish(self.payload()).status, 204)
         observation, revision = self.state.desired()
         self.state.publish(observation, revision)
@@ -344,8 +366,16 @@ class HTTPTests(HTTPHarness):
         assert last_event is not None
         deadline = last_event + 15
         self.state.clock = lambda: deadline
-        self.assertEqual(json.loads(self.request("GET", "/radio/info")[1].read())["state"], "idle")
-        self.assertEqual(self.request("GET", "/radio/cover")[1].status, 404)
+        idle = json.loads(self.request("GET", "/radio/info")[1].read())
+        self.assertEqual(idle["state"], "idle")
+        self.assertEqual(idle["title"], self.payload()["track"]["title"])
+        self.assertEqual(idle["lastPlayedAt"], self.payload()["timestamp"])
+        _, response = self.request("GET", f"/radio/cover?v={idle['coverVersion']}")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(hashlib.sha256(response.read()).hexdigest(), idle["coverVersion"])
+        self.state.publish(*self.state.desired())
+        self.assertIsNone(self.state.desired()[0].track)
+        self.assertEqual(self.state.info()["state"], "idle")
 
     @unittest.skipUnless(socket.has_ipv6, "IPv6 sockets unavailable")
     def test_explicit_ipv6_listener(self):

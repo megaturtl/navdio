@@ -23,7 +23,7 @@ MAX_COVER_PIXELS = 1024 * 1024
 MAX_COVER_AXIS = 2048
 MAX_SESSIONS = 256
 LIVENESS_SECONDS = 15
-PAUSED_SECONDS = 30 * 60
+PAUSED_SECONDS = 60
 
 # Set once: per-request changes would race between HTTP handlers.
 Image.MAX_IMAGE_PIXELS = MAX_COVER_PIXELS
@@ -104,6 +104,7 @@ class Observation:
     observed_at: float = 0
     track: Track | None = None
     rate: float = 1
+    last_played_at: float | None = None
 
     def position(self, now):
         if self.track is None:
@@ -126,6 +127,7 @@ class Observation:
             "genres": list(track.genres) if track else [],
             "playCount": track.play_count if track else None,
             "coverVersion": track.cover_version if track else None,
+            "lastPlayedAt": self.last_played_at,
         }
 
 
@@ -275,6 +277,7 @@ class Session:
             self.received_at,
             event.track,
             event.rate,
+            event.timestamp if event.state == "playing" else None,
         )
 
 
@@ -287,10 +290,11 @@ class RadioState:
         self.last_event = None
         self.revision = 0
         self.rendered = Observation()
+        self.last_played = Observation()
 
     def _expire(self, now):
         if self.last_event is not None and now - self.last_event >= LIVENESS_SECONDS:
-            # A heartbeat after an outage must not revive old audio or cover art.
+            # A heartbeat after an outage must not revive old audio.
             self.sessions = {
                 key: Session(replace(session.event, state="expired", track=None), now, now)
                 for key, session in self.sessions.items()
@@ -301,7 +305,7 @@ class RadioState:
         self.sessions = {
             key: session
             for key, session in self.sessions.items()
-            if now < session.expires_at + PAUSED_SECONDS
+            if now < max(session.received_at, session.expires_at) + PAUSED_SECONDS
         }
 
     def accept(self, event):
@@ -325,7 +329,17 @@ class RadioState:
                     ) / event.rate + 5
                 else:
                     ttl = 0
-                self.sessions[event.key] = Session(event, now, now + ttl)
+                expires_at = now + ttl
+                if (
+                    event.state == "paused"
+                    and previous is not None
+                    and previous.event.state == "paused"
+                    and previous.event.track is not None
+                    and event.track is not None
+                    and previous.event.track.key == event.track.key
+                ):
+                    expires_at = previous.expires_at
+                self.sessions[event.key] = Session(event, now, expires_at)
                 self.last_event = now
                 self.revision += 1
         self.wake.set()
@@ -360,6 +374,16 @@ class RadioState:
     def publish(self, observation, revision):
         with self.lock:
             if revision == self.revision:
+                if observation.track is not None:
+                    if observation.state == "playing":
+                        self.last_played = replace(observation, state="idle", position_ms=0)
+                    elif (
+                        self.last_played.track is not None
+                        and observation.track.key == self.last_played.track.key
+                    ):
+                        observation = replace(
+                            observation, last_played_at=self.last_played.last_played_at
+                        )
                 self.rendered = observation
 
     def _public(self, now):
@@ -371,7 +395,7 @@ class RadioState:
             or selected.track.key != self.rendered.track.key
             or selected.state != self.rendered.state
         ):
-            return Observation()
+            return self.last_played
         return self.rendered
 
     def info(self):
@@ -392,5 +416,6 @@ class RadioState:
             self.sessions.clear()
             self.last_event = None
             self.rendered = Observation()
+            self.last_played = Observation()
             self.revision += 1
         self.wake.set()

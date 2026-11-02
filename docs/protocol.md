@@ -67,12 +67,12 @@ Only normal-speed playback is broadcast.
 
 The plugin sends heartbeats every five seconds.
 Any accepted event refreshes source liveness.
-After 15 seconds without an event, playback becomes idle and the cover disappears.
+After 15 seconds without an event, playback becomes idle. The last played metadata and cover remain available.
 
 Session expiry is separate from source liveness:
 
 - Playing sessions expire after their expected remaining duration plus five seconds.
-- Paused sessions expire after 30 minutes.
+- Paused sessions expire after 60 seconds. Repeated pause reports for the same track do not extend this deadline.
 - Stopped and expired sessions are not eligible for playback.
 
 Heartbeats do not extend session expiry.
@@ -96,12 +96,19 @@ Public position reports radio playback, not the latest client position.
   "bpm": 124,
   "genres": ["House"],
   "playCount": 42,
-  "coverVersion": "sha256-of-the-final-jpeg"
+  "coverVersion": "sha256-of-the-final-jpeg",
+  "lastPlayedAt": 1700000000
 }
 ```
 
 Public responses exclude native paths, user and player identifiers, credentials, and internal artwork URLs.
-Info uses `Cache-Control: no-store`. Idle info clears track fields.
+Info uses `Cache-Control: no-store`.
+When idle, info retains the last successfully published playing track and sets `positionMs` to zero.
+`lastPlayedAt` is the latest playing report's Unix timestamp in seconds, not a completed-play or scrobble time.
+Pauses, heartbeats, and metadata requests do not advance it. A new playing report updates it, including repeats.
+Without a track, track fields and `lastPlayedAt` are empty or null. A paused-only track has no last played time.
+The cache holds one track and its cover in memory. A companion restart clears it.
+Cached metadata never resumes audio. Use `state` to distinguish live playback from the last played track.
 Missing BPM and play count use null. Missing genres use an empty array.
 `playCount` is the broadcast user's Navidrome count, not the number of radio listens.
 Zero is a known count. The count refreshes when the plugin receives another playback report.
@@ -109,8 +116,8 @@ Navdio does not calculate BPM or submit plays.
 
 `coverVersion` identifies the final 50×50 JPEG by its SHA-256 hash. It is null without artwork.
 Fetch artwork separately from `GET /radio/cover?v=<coverVersion>`. Info does not include a cover URL.
-The companion returns 404 if the requested version is not current, including during a track change.
-It does not keep historical artwork. Unversioned cover requests remain supported.
+The companion returns 404 if the requested version does not match the displayed track, including during a track change.
+When idle, the displayed cover belongs to the last played track. Unversioned cover requests remain supported.
 Other query parameters do not affect routing.
 
 Successful cover responses use `Cache-Control: no-cache` and a quoted content-hash `ETag`.

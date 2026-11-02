@@ -120,7 +120,8 @@ class StateTests(unittest.TestCase):
         self.assertIsNotNone(self.state.cover())
         self.clock.now += 15
         self.assertEqual(self.state.info()["state"], "idle")
-        self.assertIsNone(self.state.cover())
+        self.assertEqual(self.state.info()["title"], "Title")
+        self.assertIsNotNone(self.state.cover())
         self.state.accept(Heartbeat())
         self.assertIsNone(self.state.desired()[0].track)
         self.state.accept(self.event(timestamp=1001))
@@ -133,13 +134,35 @@ class StateTests(unittest.TestCase):
             self.state.accept(Heartbeat())
         self.assertIsNone(self.state.desired()[0].track)
         self.state.accept(self.event(state="paused", timestamp=1001))
-        for _ in range(179):
+        for _ in range(5):
             self.clock.now += 10
             self.state.accept(Heartbeat())
+        self.clock.now += 9
+        self.state.accept(Heartbeat())
         self.assertEqual(self.state.desired()[0].state, "paused")
-        self.clock.now += 10
+        self.clock.now += 1
         self.state.accept(Heartbeat())
         self.assertIsNone(self.state.desired()[0].track)
+
+    def test_repeated_pause_reports_expire_until_playback_resumes(self):
+        self.state.accept(self.event(coverArt=artwork()))
+        self.render()
+        cover = self.state.cover()
+        self.state.accept(self.event(timestamp=1001, state="paused"))
+        self.render()
+        for elapsed in range(10, 181, 10):
+            self.clock.now += 10
+            self.state.accept(self.event(timestamp=1001 + elapsed, state="paused"))
+            self.render()
+            self.assertEqual(self.state.info()["state"], "paused" if elapsed < 60 else "idle")
+        self.assertEqual(self.state.info()["lastPlayedAt"], 1000)
+        self.assertEqual(self.state.cover(), cover)
+        self.state.accept(self.event(timestamp=1200))
+        self.render()
+        self.assertEqual(self.state.info()["state"], "playing")
+        self.state.accept(self.event(timestamp=1201, state="paused"))
+        self.render()
+        self.assertEqual(self.state.info()["state"], "paused")
 
     def test_cover_is_exact_jpeg_and_public_snapshot_has_no_identifiers(self):
         self.state.accept(self.event(coverArt=artwork()))
@@ -161,6 +184,7 @@ class StateTests(unittest.TestCase):
                 "genres": [],
                 "playCount": None,
                 "coverVersion": cover[0],
+                "lastPlayedAt": 1000,
             },
         )
         with Image.open(io.BytesIO(cover[1])) as image:
@@ -169,7 +193,7 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(info))
         self.assertNotIn(str(self.root), json.dumps(info))
 
-    def test_metadata_refreshes_without_track_change_and_clears_on_idle(self):
+    def test_metadata_refreshes_without_track_change_and_survives_idle(self):
         song = self.payload()["track"]
         self.state.accept(
             self.event(track={**song, "bpm": 124, "genres": ["House"], "playCount": 0})
@@ -186,8 +210,58 @@ class StateTests(unittest.TestCase):
         self.assertEqual(info["state"], "idle")
         self.assertEqual(
             (info["bpm"], info["genres"], info["playCount"], info["coverVersion"]),
-            (None, [], None, None),
+            (None, [], 1, None),
         )
+        self.assertEqual(info["lastPlayedAt"], 1001)
+
+    def test_stopped_track_retains_metadata_without_reviving_playback(self):
+        self.state.accept(self.event(coverArt=artwork()))
+        self.render()
+        artwork_before = self.state.cover()
+        self.state.accept(self.event(timestamp=1001, state="stopped", track=None))
+        self.render()
+        for _ in range(3):
+            self.clock.now += 10
+            self.state.accept(Heartbeat())
+            self.render()
+        info = self.state.info()
+        self.assertEqual(
+            (info["state"], info["title"], info["lastPlayedAt"]), ("idle", "Title", 1000)
+        )
+        self.assertEqual(info["positionMs"], 0)
+        self.assertEqual(self.state.cover(), artwork_before)
+        self.assertIsNone(self.state.desired()[0].track)
+
+    def test_pause_does_not_advance_last_played_timestamp(self):
+        self.state.accept(self.event())
+        self.render()
+        self.state.accept(self.event(timestamp=1001, state="paused"))
+        self.render()
+        self.assertEqual(self.state.info()["lastPlayedAt"], 1000)
+        self.state.accept(self.event(timestamp=1002))
+        self.render()
+        self.assertEqual(self.state.info()["lastPlayedAt"], 1002)
+
+    def test_unplayed_and_stale_observations_do_not_replace_last_played(self):
+        self.assertIsNone(self.state.info()["lastPlayedAt"])
+        self.state.accept(self.event(state="paused"))
+        self.render()
+        self.assertIsNone(self.state.info()["lastPlayedAt"])
+        self.state.accept(self.event(timestamp=1001))
+        self.render()
+        song = {**self.payload()["track"], "id": "new-track", "title": "New"}
+        self.state.accept(self.event(timestamp=1002, track=song))
+        observation, revision = self.state.desired()
+        self.assertEqual(self.state.info()["title"], "Title")
+        self.state.accept(self.event(timestamp=1003, state="stopped", track=None))
+        self.state.publish(observation, revision)
+        self.render()
+        self.assertEqual(self.state.info()["title"], "Title")
+        self.assertEqual(self.state.info()["lastPlayedAt"], 1001)
+        self.state.clear()
+        self.assertIsNone(self.state.info()["title"])
+        self.assertIsNone(self.state.info()["lastPlayedAt"])
+        self.assertIsNone(self.state.cover())
 
     def test_invalid_metadata_does_not_replace_playback(self):
         self.state.accept(self.event())

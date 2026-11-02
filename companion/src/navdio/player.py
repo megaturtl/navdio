@@ -8,6 +8,7 @@ import stat
 import subprocess
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO
 
@@ -53,7 +54,7 @@ class SyncPolicy:
         )
         self.key, self.state = track.key, observation.state
         position = target if restart or observation.state != "playing" else position_ms
-        return Observation(observation.state, position, now, track), restart
+        return replace(observation, position_ms=position, observed_at=now), restart
 
 
 class Player:

@@ -134,8 +134,8 @@ Bitrate and listener limits give an approximate bandwidth budget, not a strict t
 | Endpoint | Response |
 | --- | --- |
 | `GET /radio/stream` | Shared Ogg/Opus audio |
-| `GET /radio/info` | State, track metadata, BPM, genres, user play count, position, and cover version |
-| `GET /radio/cover?v=<coverVersion>` | Current 50×50 JPEG, or 404 |
+| `GET /radio/info` | State, track metadata, BPM, genres, user play count, position, cover version, and last played time |
+| `GET /radio/cover?v=<coverVersion>` | Live or last played track's 50×50 JPEG, or 404 |
 
 Info uses `Cache-Control: no-store`. Fetch artwork directly with its `coverVersion` from info.
 Cover responses use `Cache-Control: no-cache` and an `ETag`. Matching conditional requests return 304 without image data.
@@ -145,6 +145,9 @@ Unversioned cover requests still work. Info does not include a cover URL.
 BPM and genres come from Navidrome metadata. Missing BPM and play count use null. Missing genres use an empty array.
 `playCount` is the broadcast user's Navidrome count, not radio listener plays.
 Metadata refreshes on eligible playback reports. Navdio does not calculate BPM or record plays.
+
+When idle, info and cover retain the last played track. `lastPlayedAt` is its latest playing report's Unix timestamp in seconds.
+Use `state` to distinguish live playback from cached metadata. The cache resets when the companion restarts.
 
 Track changes, resume, and natural repeats start at the reported position.
 Mid-song seeks, clock drift, and new listeners do not reposition the shared player.
@@ -158,7 +161,7 @@ Pause, idle, and source loss produce compressed silence without disconnecting li
 Idle traffic is small, not zero.
 Without listeners, Navdio sends no audio, but MPD's encoder can remain active.
 A plugin heartbeat detects source loss without requiring frequent client reports.
-When source liveness expires, metadata becomes idle and the cover disappears.
+When source liveness expires, playback becomes idle. The last played metadata and cover remain available.
 
 MPD reads ReplayGain tags from the files. Missing tags leave gain unchanged.
 Navdio does not submit plays or scrobbles.
