@@ -87,7 +87,7 @@ With sops-nix, add both services to the secret's `restartUnits`.
 The module:
 
 - Installs the plugin through `services.navidrome.withPlugins`.
-- Reserves the companion HTTP port through `navdio.socket`, including during companion restarts.
+- Reserves the companion HTTP port through `navdio.socket`.
 - Starts the companion and MPD with read-only library access.
 - Configures and enables the plugin through Navidrome's CLI before Navidrome starts.
 - Grants access only to the selected user and libraries, without library writes.
@@ -103,12 +103,32 @@ Fix the prerequisites, then restart Navidrome to apply the plugin settings.
 Provisioning uses Navidrome's working directory to resolve a relative `DbPath`, even when `DataFolder` moves.
 The module does not create Navidrome users, change authentication, open firewall ports, or configure a public proxy.
 
-For upgrades from direct binding, stop Navidrome before enabling the socket.
-Confirm that `navdio.socket` is active before restarting Navidrome.
-
 Set `services.navdio.configurePlugin = false` to manage plugin settings and grants yourself.
 Match the plugin's username and player filter to `services.navdio.username` and `services.navdio.player`.
 With automatic provisioning, each Navidrome startup restores the managed values. Web UI edits to those settings do not persist.
+
+### Restart, move, or disable Navdio
+
+To restart only the companion, restart `navdio.service`. Leave `navdio.socket` active.
+The socket keeps the port reserved, but existing radio streams disconnect.
+A NixOS switch can stop and start the socket when the companion unit changes, even for a bitrate change.
+Plan for Navidrome downtime. After the switch, check both services and the socket. Start Navidrome if it remains stopped.
+
+Before changing `listenAddress` or `port`, plan a maintenance window:
+
+1. Build the new configuration. Include any reverse proxy changes needed for the new endpoint.
+2. Stop `navidrome.service`. Disable the old plugin with Navidrome's offline `plugin disable navdio` command if it is enabled. Use the daemon's configuration and working directory. This prevents the old plugin from sending its token after the old socket closes.
+3. Stop `navdio.socket` if it exists. Activate the new configuration.
+4. Confirm that `navdio.socket` listens on the new address and port. Start `navdio.service` if necessary.
+5. Start Navidrome if it is stopped. In manual mode, update the plugin origin before enabling the plugin.
+6. Play a track with the configured user. Check info and listen to the stream through the proxy, if configured.
+
+When upgrading from direct binding, stop Navidrome and disable the old plugin before releasing the old listener.
+Confirm that the new socket is active before enabling the plugin.
+
+To disable Navdio, remove its public proxy routes. Stop Navidrome and disable the plugin before the old socket closes.
+Activate the configuration with `services.navdio.enable = false`.
+Confirm that the companion and socket are gone and that Navidrome starts without the Navdio plugin.
 
 ### Options
 
