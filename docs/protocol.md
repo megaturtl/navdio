@@ -85,6 +85,7 @@ Heartbeats do not extend session expiry.
 The companion repositions MPD only at startup, track changes, resume, and natural repeats.
 Progress reports and mid-song client seeks do not change the radio's clock.
 Public position reports radio playback, not the latest client position.
+If MPD reaches the end of a track first, info shows idle. A late progress report does not restart the track.
 
 ## Public metadata
 
@@ -107,8 +108,8 @@ Public position reports radio playback, not the latest client position.
 Public responses exclude native paths, user and player identifiers, credentials, and internal artwork URLs.
 Info uses `Cache-Control: no-store`.
 When idle, info retains the last successfully published playing track and sets `positionMs` to zero.
-`lastPlayedAt` is the latest playing report's Unix timestamp in seconds, not a completed-play or scrobble time.
-Pauses, heartbeats, and metadata requests do not advance it. A new playing report updates it, including repeats.
+`lastPlayedAt` is the Unix timestamp in seconds of the latest report published as playing.
+It does not record a completed play or scrobble.
 Without a track, track fields and `lastPlayedAt` are empty or null. A paused-only track has no last played time.
 The cache holds one track and its cover in memory. A companion restart clears it.
 Cached metadata never resumes audio. Use `state` to distinguish live playback from the last played track.

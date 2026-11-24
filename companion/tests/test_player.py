@@ -239,7 +239,9 @@ class RealMPDTests(unittest.TestCase):
 
                 next_path = music / "next.wav"
                 shutil.copyfile(outside, next_path)
-                next_track = Track((*session, "next"), next_path, "Next track", (), None, 1000)
+                next_track = Track(
+                    (*session, "next"), next_path, "Next track", (), None, 1000, b"next cover"
+                )
                 next_report = replace(report, timestamp=2, position_ms=0, track=next_track)
                 state.accept(next_report)
                 next_path.unlink()
@@ -255,10 +257,39 @@ class RealMPDTests(unittest.TestCase):
                 shutil.copyfile(outside, next_path)
                 render()
                 self.assertEqual(player.status()["state"], "stop")
-                state.accept(replace(next_report, timestamp=3, track=replace(next_track)))
+                next_report = replace(next_report, timestamp=3, track=replace(next_track))
+                state.accept(next_report)
                 render()
                 self.assertEqual(player.status()["state"], "play")
                 self.assertEqual(state.info()["title"], "Next track")
+
+                deadline = time.monotonic() + 4
+                while player.status()["state"] != "stop" and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(player.status()["state"], "stop")
+                state.accept(replace(next_report, timestamp=4, position_ms=500))
+                render()
+                self.assertEqual(player.status()["state"], "stop")
+                idle = state.info()
+                self.assertEqual(idle["state"], "idle")
+                self.assertEqual(idle["positionMs"], 0)
+                self.assertEqual(idle["title"], "Next track")
+                self.assertEqual(idle["lastPlayedAt"], 3)
+                self.assertEqual(state.cover(), (next_track.cover_version, next_track.cover))
+                self.assertTrue(response.read1(8192), "Listener disconnected at EOF")
+
+                state.accept(replace(next_report, timestamp=5))
+                render()
+                self.assertEqual(player.status()["state"], "play")
+                self.assertEqual(state.info()["lastPlayedAt"], 5)
+                state.accept(replace(next_report, timestamp=6, state="paused", position_ms=500))
+                render()
+                self.assertEqual(player.status()["state"], "pause")
+                state.accept(replace(next_report, timestamp=7, position_ms=500))
+                render()
+                self.assertEqual(player.status()["state"], "play")
+                self.assertEqual(state.info()["lastPlayedAt"], 7)
+
                 response.close()
 
                 process.terminate()

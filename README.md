@@ -151,7 +151,7 @@ BPM and genres come from Navidrome metadata. Missing BPM and play count use null
 `playCount` is the broadcast user's Navidrome count, not radio listener plays.
 Metadata refreshes on eligible playback reports. Navdio does not calculate BPM or record plays.
 
-When idle, info and cover retain the last played track. `lastPlayedAt` is its latest playing report's Unix timestamp in seconds.
+When idle, info and cover retain the last played track. `lastPlayedAt` records the latest report published while that track was playing.
 Use `state` to distinguish live playback from cached metadata. The cache resets when the companion restarts.
 
 Track changes, resume, and natural repeats start at the reported position.

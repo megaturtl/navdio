@@ -288,7 +288,10 @@ audio_output {{
                 self.client.pause(0)
                 changed = True
             if changed:
-                self.status()
+                status = self.status()
+            if result.state == "playing" and status["state"] == "stop":
+                # Keep seek history and the loaded file for a repeat or resume.
+                return Observation()
             return result
         except (MPDError, OSError, ValueError, RuntimeError):
             raise PlayerError("MPD synchronisation failed") from None
