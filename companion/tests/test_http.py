@@ -14,23 +14,24 @@ import threading
 import time
 import unittest
 from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import ThreadingMixIn, UnixStreamServer
 from typing import cast
 from unittest.mock import patch
 
 from PIL import Image
 
-from navdio.config import Config
+from navdio.config import MPD_AUDIO_SOCKET, Config
 from navdio.http import RadioServer
 from navdio.state import RadioState
 from navdio.stats import Statistics, read_statistics
 
 
-class SourceServer(ThreadingHTTPServer):
+class SourceServer(ThreadingMixIn, UnixStreamServer):
     daemon_threads = True
 
-    def __init__(self):
+    def __init__(self, path):
         self.request_headers: list[dict[str, str]] = []
         self.stopping = threading.Event()
         self.payload: bytes | None = None
@@ -38,7 +39,7 @@ class SourceServer(ThreadingHTTPServer):
         self.continue_stream = threading.Event()
         self.release = threading.Event()
         self.status = 200
-        super().__init__(("127.0.0.1", 0), SourceHandler)
+        super().__init__(str(path), SourceHandler)
 
 
 class SourceHandler(BaseHTTPRequestHandler):
@@ -81,7 +82,7 @@ class HTTPHarness(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "song.wav").write_bytes(b"fixture")
-        self.source = SourceServer()
+        self.source = SourceServer(self.root / MPD_AUDIO_SOCKET)
         self.source.payload = self.audio_payload
         self.source_thread = threading.Thread(
             target=self.source.serve_forever, kwargs={"poll_interval": 0.01}
@@ -96,7 +97,7 @@ class HTTPHarness(unittest.TestCase):
             username="private-user",
             player=self.player,
             port=self.listener.getsockname()[1],
-            source_port=self.source.server_port,
+            runtime_directory=self.root,
             max_listeners=self.max_listeners,
         )
         self.state = RadioState()
@@ -486,12 +487,8 @@ class HTTPStatisticsTests(HTTPHarness):
         self.assertGreater(snapshot["periods"]["all_time"]["listened_ms"], 0)
 
     def test_failed_upstream_setup_records_no_audio_or_listener(self):
-        with socket.socket() as unavailable:
-            unavailable.bind(("127.0.0.1", 0))
-            self.server.config = replace(
-                self.server.config, source_port=unavailable.getsockname()[1]
-            )
-            self.assertEqual(self.request("GET", "/radio/stream")[1].status, 503)
+        self.server.config = replace(self.server.config, runtime_directory=self.root / "missing")
+        self.assertEqual(self.request("GET", "/radio/stream")[1].status, 503)
         self.statistics.close()
         snapshot = read_statistics(self.database)
         self.assertEqual(snapshot["connected"], 0)
@@ -526,7 +523,11 @@ class HTTPStatisticsTests(HTTPHarness):
         failed = threading.Event()
 
         def fail_audio_write(writer, data):
-            if writer.getsockname()[1] == self.server.server_port and not data.startswith(b"HTTP/"):
+            if (
+                writer.family == socket.AF_INET
+                and writer.getsockname()[1] == self.server.server_port
+                and not data.startswith(b"HTTP/")
+            ):
                 failed.set()
                 raise BrokenPipeError
             return original_write(writer, data)
@@ -797,7 +798,6 @@ class ActivationTests(unittest.TestCase):
             "tokenFile": str(token),
             "runtimeDirectory": str(self.root / "runtime"),
             "port": self.port,
-            "sourcePort": 1 if self.port != 1 else 2,
         }
 
     def child(self, descriptor=None, pid="self", count="1", mode="main", **config):

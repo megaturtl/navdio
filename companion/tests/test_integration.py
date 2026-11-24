@@ -130,12 +130,7 @@ class IntegrationTests(unittest.TestCase):
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(32)
                 port = listener.getsockname()[1]
-                ports = set()
-                while len(ports) < 2:
-                    candidate = free_port()
-                    if candidate != port:
-                        ports.add(candidate)
-                source_port, nd_port = ports
+                nd_port = free_port()
                 origin, nd_origin = f"http://127.0.0.1:{port}", f"http://127.0.0.1:{nd_port}"
                 credentials = root / "credentials"
                 credentials.mkdir(mode=0o700)
@@ -151,7 +146,6 @@ class IntegrationTests(unittest.TestCase):
                         {
                             **broadcast_policy,
                             "port": port,
-                            "sourcePort": source_port,
                             "libraries": {"1": str(music)},
                             "tokenFile": str(token_file),
                             "runtimeDirectory": str(root / "runtime"),

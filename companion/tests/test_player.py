@@ -9,15 +9,9 @@ import wave
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from navdio.config import Config
+from navdio.config import MPD_AUDIO_SOCKET, Config
 from navdio.player import Player, PlayerError, SyncPolicy
 from navdio.state import Observation, Track
-
-
-def free_port():
-    with socket.socket() as connection:
-        connection.bind(("127.0.0.1", 0))
-        return connection.getsockname()[1]
 
 
 class PolicyTests(unittest.TestCase):
@@ -175,10 +169,13 @@ class RealMPDTests(unittest.TestCase):
                 {"1": music},
                 b"test-only-token",
                 username="test-broadcaster",
-                source_port=free_port(),
                 runtime_directory=root / "runtime",
                 mpd=Path(MPD).name,
             )
+            config.runtime_directory.mkdir(mode=0o700)
+            output_socket = config.runtime_directory / MPD_AUDIO_SOCKET
+            with socket.socket(socket.AF_UNIX) as stale:
+                stale.bind(str(output_socket))
             player = Player(config)
             source = None
             try:
@@ -196,17 +193,22 @@ class RealMPDTests(unittest.TestCase):
                 environment = Path(f"/proc/{process.pid}/environ")
                 if environment.exists():
                     self.assertNotIn(b"NAVDIO_TEST_CREDENTIAL", environment.read_bytes())
-                source = http.client.HTTPConnection("127.0.0.1", config.source_port, timeout=5)
-                source.request("GET", "/")
-                response = source.getresponse()
+                source = socket.socket(socket.AF_UNIX)
+                source.settimeout(5)
+                source.connect(str(output_socket))
+                source.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                response = http.client.HTTPResponse(source)
+                response.begin()
                 self.assertEqual(response.status, 200)
                 self.assertIsNone(response.getheader("icy-metaint"))
                 data = bytearray()
                 deadline = time.monotonic() + 5
-                while b"OpusHead" not in data and time.monotonic() < deadline:
+                while data.count(b"OggS") < 3 and time.monotonic() < deadline:
                     data.extend(response.read1(8192))
                 self.assertTrue(data.startswith(b"OggS"))
                 self.assertIn(b"OpusHead", data)
+                self.assertGreaterEqual(data.count(b"OggS"), 3)
+                response.close()
                 track = Track(("song",), song, "Title", (), None, 6000)
                 clear = player.client.clear
 

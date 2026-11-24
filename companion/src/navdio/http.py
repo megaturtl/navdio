@@ -14,7 +14,7 @@ from socketserver import ThreadingMixIn
 from typing import cast
 from urllib.parse import parse_qs
 
-from .config import Config, RadioError
+from .config import MPD_AUDIO_SOCKET, Config, RadioError
 from .state import MAX_BODY_BYTES, EventError, RadioState, parse_event
 from .stats import Statistics
 
@@ -71,7 +71,7 @@ class RadioServer(ThreadingMixIn, HTTPServer):
         self.request_slots = threading.BoundedSemaphore(config.max_listeners + 16)
         self.connections_lock = threading.Lock()
         self.connections: set[socket.socket] = set()
-        self.upstreams: set[http.client.HTTPConnection] = set()
+        self.upstreams: set[socket.socket] = set()
         self.closing = False
         self.address_family = listener.family
         super().__init__(listener.getsockname(), RadioHandler, bind_and_activate=False)
@@ -145,11 +145,10 @@ class RadioServer(ThreadingMixIn, HTTPServer):
             except OSError:
                 pass
         for connection in upstreams:
-            if connection.sock is not None:
-                try:
-                    connection.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             connection.close()
         super().server_close()
 
@@ -318,20 +317,22 @@ class RadioHandler(BaseHTTPRequestHandler):
         if not server.listener_slots.acquire(blocking=False):
             self.reply(503)
             return
-        upstream = http.client.HTTPConnection(
-            "127.0.0.1", server.config.source_port, timeout=IO_TIMEOUT
-        )
+        upstream = None
         response = None
         sent = False
         statistics = server.statistics
         stream_id = None
         try:
+            upstream = socket.socket(socket.AF_UNIX)
             if not server.register_upstream(upstream):
                 self.reply(503)
                 return
+            upstream.settimeout(IO_TIMEOUT)
+            upstream.connect(str(server.config.runtime_directory / MPD_AUDIO_SOCKET))
             # ICY metadata adds non-Ogg bytes. Do not request or relay it.
-            upstream.request("GET", "/", headers={"Connection": "close"})
-            response = upstream.getresponse()
+            upstream.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            response = http.client.HTTPResponse(upstream, method="GET")
+            response.begin()
             if response.status != 200 or response.getheader("icy-metaint") is not None:
                 self.reply(503)
                 return
@@ -366,6 +367,7 @@ class RadioHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             if response is not None:
                 response.close()
-            upstream.close()
-            server.unregister_upstream(upstream)
+            if upstream is not None:
+                upstream.close()
+                server.unregister_upstream(upstream)
             server.listener_slots.release()

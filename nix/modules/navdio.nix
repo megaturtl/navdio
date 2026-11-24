@@ -16,7 +16,6 @@
       player
       listenAddress
       port
-      sourcePort
       libraries
       bitrateKbps
       replaygain
@@ -118,11 +117,6 @@ in {
       default = 8750;
       description = "Companion HTTP port.";
     };
-    sourcePort = lib.mkOption {
-      type = lib.types.port;
-      default = 8751;
-      description = "Internal, loopback-only MPD HTTP port. Do not expose publicly.";
-    };
     bitrateKbps = lib.mkOption {
       type = lib.types.ints.between 6 510;
       default = 32;
@@ -189,10 +183,6 @@ in {
       {
         assertion = lib.hasPrefix "/" cfg.tokenFile && !lib.hasPrefix builtins.storeDir cfg.tokenFile;
         message = "services.navdio.tokenFile must be an absolute runtime secret path outside the Nix store.";
-      }
-      {
-        assertion = cfg.port != cfg.sourcePort;
-        message = "Navdio HTTP and internal MPD ports must be different.";
       }
       {
         assertion =

@@ -13,6 +13,8 @@ class RadioError(Exception):
 
 
 MAX_IDENTITY_LENGTH = 1024
+MPD_CONTROL_SOCKET = "mpd.sock"
+MPD_AUDIO_SOCKET = "audio.sock"
 
 
 def json_object(pairs):
@@ -53,7 +55,6 @@ class Config:
     player: str = ""
     listen_address: str = "127.0.0.1"
     port: int = 8750
-    source_port: int = 8751
     runtime_directory: Path = Path("/run/navdio")
     bitrate_kbps: int = 32
     replaygain: str = "track"
@@ -73,7 +74,6 @@ class Config:
             if not isinstance(data, dict) or set(data) - {
                 "listenAddress",
                 "port",
-                "sourcePort",
                 "libraries",
                 "tokenFile",
                 "username",
@@ -104,9 +104,6 @@ class Config:
                 raise ValueError
             ipaddress.ip_address(address)
             port = integer(data.get("port", 8750), 1, 65535)
-            source_port = integer(data.get("sourcePort", 8751), 1, 65535)
-            if port == source_port:
-                raise ValueError
             roots = data["libraries"]
             if not isinstance(roots, dict) or not roots:
                 raise ValueError
@@ -125,7 +122,10 @@ class Config:
             if not 1 <= len(token) <= 4096 or any(c < 33 or c > 126 for c in token):
                 raise ValueError
             runtime = path_value(data.get("runtimeDirectory", "/run/navdio"))
-            if len(os.fsencode(runtime / "mpd.sock")) > 100 or runtime == Path("/"):
+            if runtime == Path("/") or any(
+                len(os.fsencode(runtime / name)) > 100
+                for name in (MPD_CONTROL_SOCKET, MPD_AUDIO_SOCKET)
+            ):
                 raise ValueError
             stats_database = path_value(data.get("statsDatabase", "/var/lib/navdio/stats.sqlite3"))
             if stats_database == Path("/"):
@@ -159,7 +159,6 @@ class Config:
                 player=player,
                 listen_address=address,
                 port=port,
-                source_port=source_port,
                 runtime_directory=runtime,
                 bitrate_kbps=bitrate,
                 replaygain=replaygain,

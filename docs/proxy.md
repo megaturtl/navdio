@@ -56,7 +56,7 @@ services.nginx.virtualHosts."radio.example.org".locations = {
 ```
 
 Use a dedicated radio virtual host for this example. Its fallback returns 404.
-Never proxy the companion's entire port or expose MPD's HTTP port and control socket.
+Never proxy the companion's entire port or expose MPD's private sockets.
 The companion port includes the private `/_navdio/events` endpoint.
 CORS permits browser reads. It does not authorise private events.
 Use a specific allowed origin instead of `*` if needed.

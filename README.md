@@ -14,7 +14,7 @@ The plugin sandbox cannot open HTTP listeners or start MPD, so the companion run
 - NixOS and Navidrome 0.64.2 or newer. The plugin uses the 0.64.2 API.
 - A client that sends state and position through the OpenSubsonic playback-report extension, such as a compatible Feishin version.
 - Navidrome and the companion on the same machine, with read access to the same music files. Their library mount paths can differ.
-- MPD with HTTP output and Opus support. The Nix package includes it.
+- MPD with Opus support and HTTP output over a Unix socket. The Nix package includes it.
 
 Legacy now-playing and scrobble reports do not include the required pause and position data.
 Navidrome's playback filters also affect which reports reach the plugin.
@@ -119,13 +119,15 @@ With automatic provisioning, each Navidrome startup restores the managed values.
 | `tokenFile` | Required runtime event-token file |
 | `listenAddress` | Companion bind address. Default: `127.0.0.1` |
 | `port` | Companion HTTP port. Default: 8750 |
-| `sourcePort` | Private MPD loopback port. Default: 8751 |
 | `bitrateKbps` | Opus constrained-VBR target. Default: 32 |
 | `replaygain` | `track`, `album`, or `off`, with peak limiting. Default: `track` |
 | `maxListeners` | Concurrent direct stream connections. Default: 40 |
 | `supplementaryGroups` | Existing groups needed to read music |
 | `statsTrustedProxies` | Proxy CIDRs trusted for statistics-only `X-Real-IP`. Default: `[]` |
 | `configurePlugin` | Manage plugin settings and grants. Default: true |
+
+Remove any `sourcePort` setting from NixOS or standalone JSON when upgrading.
+MPD now sends audio through a private Unix socket. Use `/radio/stream` instead of connecting to MPD directly.
 
 Do not expose the companion's entire HTTP port. It includes the private event endpoint.
 Use a reverse proxy for only the three public GET routes.

@@ -14,7 +14,7 @@ from typing import BinaryIO
 
 from mpd import MPDClient, MPDError
 
-from .config import Config, RadioError
+from .config import MPD_AUDIO_SOCKET, MPD_CONTROL_SOCKET, Config, RadioError
 from .state import Observation
 
 
@@ -91,12 +91,14 @@ class Player:
                 with wave.open(source, "wb") as output:
                     output.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
                     output.writeframes(bytes(4800 * 4))
-            socket = runtime / "mpd.sock"
-            socket.unlink(missing_ok=True)
+            control_socket = runtime / MPD_CONTROL_SOCKET
+            audio_socket = runtime / MPD_AUDIO_SOCKET
+            control_socket.unlink(missing_ok=True)
+            audio_socket.unlink(missing_ok=True)
             config_path = runtime / "mpd.conf"
             content = f'''music_directory {quoted(empty)}
 playlist_directory {quoted(runtime)}
-bind_to_address {quoted(socket)}
+bind_to_address {quoted(control_socket)}
 auto_update "no"
 zeroconf_enabled "no"
 replaygain "{self.config.replaygain}"
@@ -106,8 +108,7 @@ audio_buffer_size "512"
 audio_output {{
     type "httpd"
     name "navdio"
-    bind_to_address "127.0.0.1"
-    port "{self.config.source_port}"
+    bind_to_address {quoted(audio_socket)}
     max_clients "{self.config.max_listeners}"
     format "48000:16:2"
     encoder "opus"
@@ -121,7 +122,7 @@ audio_output {{
             with config_path.open("w", encoding="utf-8") as output:
                 os.fchmod(output.fileno(), 0o600)
                 output.write(content)
-            return config_path, socket, silence
+            return config_path, control_socket, silence
         except (OSError, ValueError):
             raise PlayerError("Cannot prepare private MPD runtime") from None
 
