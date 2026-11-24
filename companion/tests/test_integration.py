@@ -145,9 +145,11 @@ class IntegrationTests(unittest.TestCase):
                 config, nd_config, plugin_config = (
                     root / name for name in ("navdio.json", "navidrome.json", "plugin.json")
                 )
+                broadcast_policy = {"username": "broadcaster", "player": "NavdioIntegration"}
                 config.write_text(
                     json.dumps(
                         {
+                            **broadcast_policy,
                             "port": port,
                             "sourcePort": source_port,
                             "libraries": {"1": str(music)},
@@ -250,8 +252,7 @@ class IntegrationTests(unittest.TestCase):
                 plugin_config.write_text(
                     json.dumps(
                         {
-                            "username": "broadcaster",
-                            "player": "NavdioIntegration",
+                            **broadcast_policy,
                             "companionUrl": origin,
                         }
                     )

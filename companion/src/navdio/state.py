@@ -15,7 +15,14 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .config import RadioError, json_object, library_path, reject_constant
+from .config import (
+    MAX_IDENTITY_LENGTH,
+    Config,
+    RadioError,
+    json_object,
+    library_path,
+    reject_constant,
+)
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_COVER_BYTES = 32 * 1024
@@ -40,6 +47,17 @@ def text(value, *, required=False, limit=4096):
         raise ValueError
     value.encode("utf-8")
     return value
+
+
+def fold_player(name: str) -> str:
+    # Go's EqualFold uses simple folding, which does not expand a character.
+    folded_name = []
+    for char in name:
+        folded = char.casefold()
+        if len(folded) != 1:
+            folded = char.lower()
+        folded_name.append(folded if len(folded) == 1 else char)
+    return "".join(folded_name)
 
 
 def number(value, low=0, high=1e12):
@@ -146,7 +164,7 @@ class Heartbeat:
     pass
 
 
-def parse_event(body, libraries):
+def parse_event(body: bytes | bytearray, config: Config) -> PlaybackEvent | Heartbeat:
     if len(body) > MAX_BODY_BYTES:
         raise EventError("Event exceeds 64 KiB")
     try:
@@ -178,9 +196,15 @@ def parse_event(body, libraries):
             "coverArt",
         }:
             raise ValueError
-        username = text(data.get("username"), required=True, limit=1024)
+        username = text(data.get("username"), required=True, limit=MAX_IDENTITY_LENGTH)
+        if username != config.username:
+            raise ValueError
         player_id = text(data.get("playerId"), required=True, limit=1024)
-        text(data.get("playerName"), limit=1024)
+        player_name = text(data.get("playerName"), limit=MAX_IDENTITY_LENGTH)
+        if config.player and (
+            player_name is None or fold_player(player_name) != fold_player(config.player)
+        ):
+            raise ValueError
         state = data.get("state")
         if state not in ("starting", "playing", "paused", "stopped", "expired"):
             raise ValueError
@@ -215,7 +239,7 @@ def parse_event(body, libraries):
             if not names and legacy:
                 names.append(legacy)
             duration = int(number(song.get("duration"), 0, 10**9) * 1000)
-            path = library_path(libraries, song.get("libraryId"), song.get("path"))
+            path = library_path(config.libraries, song.get("libraryId"), song.get("path"))
             bpm = song.get("bpm")
             if bpm is not None and (type(bpm) is not int or not 1 <= bpm <= 2**31 - 1):
                 raise ValueError

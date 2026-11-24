@@ -93,10 +93,12 @@ The module:
 - Grants access only to the selected user and libraries, without library writes.
 - Sends the token through stdin, not command-line arguments.
 - Restarts Navidrome when managed plugin settings change.
+- Restarts the companion when the selected user or player changes.
 - Installs the `navdio` command and keeps private statistics in `/var/lib/navdio`.
 
 Navidrome runs only while `navdio.socket` is active.
 Plugin provisioning can fail without stopping Navidrome while that socket remains active.
+The companion rejects reports outside the configured user and player selection, even if the plugin still has old settings.
 Fix the prerequisites, then restart Navidrome to apply the plugin settings.
 The module does not create Navidrome users, change authentication, open firewall ports, or configure a public proxy.
 
@@ -104,7 +106,8 @@ For upgrades from direct binding, stop Navidrome before enabling the socket.
 Confirm that `navdio.socket` is active before restarting Navidrome.
 
 Set `services.navdio.configurePlugin = false` to manage plugin settings and grants yourself.
-Otherwise, each Navidrome startup restores the managed values. Web UI edits to those settings do not persist.
+Match the plugin's username and player filter to `services.navdio.username` and `services.navdio.player`.
+With automatic provisioning, each Navidrome startup restores the managed values. Web UI edits to those settings do not persist.
 
 ### Options
 
@@ -240,6 +243,7 @@ nix build .#navdio .#plugin
 The shell includes the compilers, runtime dependencies, and check tools.
 It sets `PYTHONPATH` to include `companion/src`. Start your editor from this shell.
 The companion requires a systemd listening socket. The NixOS module manages it.
+For a standalone companion configuration, set `username` to the broadcast user. Set `player` to restrict the client name.
 For local development, use generated test credentials:
 
 ```sh

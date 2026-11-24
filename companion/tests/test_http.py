@@ -74,6 +74,7 @@ class SourceHandler(BaseHTTPRequestHandler):
 class HTTPHarness(unittest.TestCase):
     max_listeners = 1
     audio_payload: bytes | None = None
+    player = ""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -92,6 +93,8 @@ class HTTPHarness(unittest.TestCase):
         config = Config(
             {"1": self.root},
             b"test-only-token",
+            username="private-user",
+            player=self.player,
             port=self.listener.getsockname()[1],
             source_port=self.source.server_port,
             max_listeners=self.max_listeners,
@@ -169,6 +172,33 @@ class HTTPHarness(unittest.TestCase):
             },
             "coverArt": base64.b64encode(cover.getvalue()).decode(),
         }
+
+
+class BroadcastPolicyTests(HTTPHarness):
+    player = "Straẞe"
+
+    def test_stale_playback_reports_cannot_publish_or_refresh_liveness(self):
+        selected = {**self.payload(), "playerName": "straße"}
+        for stale in (
+            {**selected, "username": "previous-user"},
+            {**selected, "username": "Private-user"},
+            {**selected, "playerName": "STRASSE"},
+            {**selected, "playerName": None},
+        ):
+            self.assertEqual(self.publish(stale).status, 422)
+        self.assertIsNone(self.state.last_event)
+        self.state.publish(*self.state.desired())
+        info = json.loads(self.request("GET", "/radio/info")[1].read())
+        self.assertEqual(info["state"], "idle")
+        self.assertIsNone(info["title"])
+        self.assertEqual(self.request("GET", "/radio/cover")[1].status, 404)
+
+        self.assertEqual(self.publish(selected).status, 204)
+        self.state.publish(*self.state.desired())
+        info = json.loads(self.request("GET", "/radio/info")[1].read())
+        self.assertEqual(info["title"], "Title")
+        self.assertEqual(info["state"], "playing")
+        self.assertEqual(self.request("GET", "/radio/cover")[1].status, 200)
 
 
 class HTTPTests(HTTPHarness):
@@ -389,6 +419,7 @@ class HTTPTests(HTTPHarness):
         config = Config(
             {"1": self.root},
             b"test-only-token",
+            username="private-user",
             listen_address="::1",
             port=listener.getsockname()[1],
         )
@@ -761,6 +792,7 @@ class ActivationTests(unittest.TestCase):
         token.write_text("test-only-token")
         self.config = self.root / "config.json"
         self.configuration = {
+            "username": "private-user",
             "libraries": {"1": str(self.root)},
             "tokenFile": str(token),
             "runtimeDirectory": str(self.root / "runtime"),

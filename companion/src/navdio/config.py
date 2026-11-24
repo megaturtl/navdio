@@ -12,6 +12,9 @@ class RadioError(Exception):
     """Only fixed, credential-free messages may cross this boundary."""
 
 
+MAX_IDENTITY_LENGTH = 1024
+
+
 def json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -46,6 +49,8 @@ def integer(value, low, high):
 class Config:
     libraries: dict[str, Path]
     token: bytes = field(repr=False)
+    username: str
+    player: str = ""
     listen_address: str = "127.0.0.1"
     port: int = 8750
     source_port: int = 8751
@@ -71,6 +76,8 @@ class Config:
                 "sourcePort",
                 "libraries",
                 "tokenFile",
+                "username",
+                "player",
                 "runtimeDirectory",
                 "bitrateKbps",
                 "replaygain",
@@ -80,6 +87,18 @@ class Config:
                 "statsTrustedProxies",
             }:
                 raise ValueError
+            username = data["username"]
+            player = data.get("player", "")
+            if (
+                not isinstance(username, str)
+                or not username.strip()
+                or len(username) > MAX_IDENTITY_LENGTH
+                or not isinstance(player, str)
+                or len(player) > MAX_IDENTITY_LENGTH
+            ):
+                raise ValueError
+            username.encode("utf-8")
+            player.encode("utf-8")
             address = data.get("listenAddress", "127.0.0.1")
             if not isinstance(address, str) or "%" in address:
                 raise ValueError
@@ -136,6 +155,8 @@ class Config:
             return cls(
                 libraries=libraries,
                 token=token,
+                username=username,
+                player=player,
                 listen_address=address,
                 port=port,
                 source_port=source_port,

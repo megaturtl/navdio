@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from PIL import GifImagePlugin, Image, PngImagePlugin, XbmImagePlugin
 
-from navdio.config import RadioError, library_path
+from navdio.config import Config, RadioError, library_path
 from navdio.state import EventError, Heartbeat, RadioState, parse_event
 
 
@@ -52,6 +52,7 @@ class StateTests(unittest.TestCase):
         self.song = self.root / "song #100%.wav"
         self.song.write_bytes(b"test fixture")
         self.libraries = {"1": self.root}
+        self.config = Config(self.libraries, b"test-only-token", username="private-user")
         self.clock = Clock()
         self.state = RadioState(self.clock)
 
@@ -82,7 +83,7 @@ class StateTests(unittest.TestCase):
         return result
 
     def event(self, **changes):
-        return parse_event(json.dumps(self.payload(**changes)).encode(), self.libraries)
+        return parse_event(json.dumps(self.payload(**changes)).encode(), self.config)
 
     def render(self):
         desired, revision = self.state.desired()
@@ -366,7 +367,7 @@ class StateTests(unittest.TestCase):
     def test_null_artists_fall_back_and_starting_is_silent(self):
         payload = self.payload(state="starting", playbackRate=1)
         payload["track"]["artists"] = None
-        self.state.accept(parse_event(json.dumps(payload).encode(), self.libraries))
+        self.state.accept(parse_event(json.dumps(payload).encode(), self.config))
         self.assertEqual(self.render().state, "paused")
         self.assertEqual(self.state.info()["artists"], ["Legacy"])
         self.state.accept(self.event(timestamp=1001, state="paused", playbackRate=0))
@@ -397,7 +398,7 @@ class StateTests(unittest.TestCase):
         invalid = [b'{"version":1,"version":1,"type":"heartbeat"}', b'{"version":NaN}', b"[]"]
         for body in invalid:
             with self.assertRaises(EventError):
-                parse_event(body, self.libraries)
+                parse_event(body, self.config)
         for changes in (
             {"positionMs": True},
             {"timestamp": -1},
@@ -409,7 +410,7 @@ class StateTests(unittest.TestCase):
         payload = self.payload()
         payload["track"]["title"] = "\ud800"
         with self.assertRaises(EventError):
-            parse_event(json.dumps(payload).encode(), self.libraries)
+            parse_event(json.dumps(payload).encode(), self.config)
 
     def test_library_paths_are_literal_relative_and_symlink_confined(self):
         self.assertEqual(library_path(self.libraries, 1, self.song.name), self.song)

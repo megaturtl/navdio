@@ -246,7 +246,7 @@ class RadioHandler(BaseHTTPRequestHandler):
                     return
                 body.extend(chunk)
             self.connection.settimeout(IO_TIMEOUT)
-            event = parse_event(body, self.radio.config.libraries)
+            event = parse_event(body, self.radio.config)
             self.radio.state.accept(event)
         except EventError as error:
             self.reply(400 if str(error) == "Invalid event JSON" else 422)

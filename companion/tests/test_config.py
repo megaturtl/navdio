@@ -16,6 +16,7 @@ class ConfigTests(unittest.TestCase):
         self.token_file.write_text("test-only-token\n")
         self.config_file = self.root / "config.json"
         self.data = {
+            "username": "test-broadcaster",
             "libraries": {"1": str(self.root)},
             "tokenFile": str(self.token_file),
             "runtimeDirectory": str(self.root / "runtime"),
@@ -32,6 +33,11 @@ class ConfigTests(unittest.TestCase):
 
     def test_explicit_ipv6_address(self):
         self.assertEqual(self.load(listenAddress="::1").listen_address, "::1")
+
+    def test_missing_broadcast_user_is_rejected(self):
+        del self.data["username"]
+        with self.assertRaises(RadioError):
+            self.load()
 
     def test_statistics_defaults_and_explicit_settings(self):
         config = self.load()
@@ -55,6 +61,9 @@ class ConfigTests(unittest.TestCase):
     def test_invalid_config_is_credential_and_path_free(self):
         cases = [
             {"unknown": True},
+            {"username": " \t"},
+            {"username": 42},
+            {"player": None},
             {"port": True},
             {"port": 0},
             {"port": 8751},

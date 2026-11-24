@@ -59,6 +59,9 @@ Invalid event artwork rejects the event. Missing plugin artwork does not prevent
 ## Session selection and liveness
 
 The plugin filters reports by its configured user and client.
+The companion also checks the exact username and the case-insensitive client name.
+Playback reports outside this selection return 422 and do not refresh source liveness.
+Heartbeats require the token but do not carry a user or client name.
 The companion prefers playing sessions, then the newest report, then stable player identity.
 Older reports cannot replace a session's newer state.
 Paths must resolve inside a mapped library root.

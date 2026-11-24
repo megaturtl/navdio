@@ -60,7 +60,10 @@ class PlayerTests(unittest.TestCase):
         self.song = self.root / "literal #100% space.wav"
         self.song.write_bytes(b"fixture")
         self.config = Config(
-            {"1": self.root}, b"test-only-token", runtime_directory=self.root / "runtime"
+            {"1": self.root},
+            b"test-only-token",
+            username="test-broadcaster",
+            runtime_directory=self.root / "runtime",
         )
         self.player = Player(self.config, clock=lambda: 100)
         self.client = MagicMock()
@@ -171,6 +174,7 @@ class RealMPDTests(unittest.TestCase):
             config = Config(
                 {"1": music},
                 b"test-only-token",
+                username="test-broadcaster",
                 source_port=free_port(),
                 runtime_directory=root / "runtime",
                 mpd=Path(MPD).name,

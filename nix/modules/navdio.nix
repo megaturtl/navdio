@@ -12,6 +12,8 @@
   companionConfig = json.generate "navdio.json" {
     inherit
       (cfg)
+      username
+      player
       listenAddress
       port
       sourcePort
@@ -62,7 +64,7 @@ in {
       example = "radio";
       description = ''
         Existing Navidrome user whose playback will be broadcast.
-        Select this user explicitly. Other users do not receive plugin access.
+        The companion rejects playback reports from other users.
       '';
     };
     player = lib.mkOption {
@@ -99,7 +101,7 @@ in {
       description = ''
         Whether to configure and enable the plugin before Navidrome starts.
         It grants read access only to the selected user and libraries.
-        If disabled, the administrator must configure the plugin and grants.
+        If disabled, match the plugin's user and player to the companion settings.
       '';
     };
     listenAddress = lib.mkOption {
