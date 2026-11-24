@@ -14,7 +14,13 @@
           fsType = "tmpfs";
         };
         services.navidrome.enable = true;
-        services.navidrome.settings.MusicFolder = "/srv/music";
+        services.navidrome.settings = {
+          MusicFolder = "/srv/music";
+          DataFolder = "/srv/navidrome/data";
+          CacheFolder = "/srv/navidrome/cache";
+          Backup.Path = "/srv/navidrome/backup";
+          DbPath = "./navidrome.db";
+        };
         services.navdio = {
           enable = true;
           username = "test-broadcaster";
@@ -28,6 +34,13 @@
     builtins.filter (entry: !entry.assertion) system.config.assertions
   );
   navidrome = system.config.services.navidrome;
+  daemon = system.config.systemd.services.navidrome.serviceConfig;
+  provisioner = system.config.systemd.services.navdio-plugin;
+  relocatedPaths = [
+    navidrome.settings.DataFolder
+    navidrome.settings.CacheFolder
+    navidrome.settings.Backup.Path
+  ];
   discoveryConfig = (pkgs.formats.json {}).generate "navdio-discovery.json" {
     DataFolder = "./data";
     CacheFolder = "./cache";
@@ -57,6 +70,13 @@
   ];
 in
   assert pkgs.lib.assertMsg (failures == []) (builtins.concatStringsSep "\n" failures);
+  assert provisioner.serviceConfig.WorkingDirectory == daemon.WorkingDirectory;
+  assert provisioner.serviceConfig.StateDirectory == daemon.StateDirectory;
+  assert pkgs.lib.all (
+    path:
+      builtins.elem path provisioner.serviceConfig.ReadWritePaths
+      && builtins.elem path provisioner.unitConfig.RequiresMountsFor
+  ) ([daemon.WorkingDirectory] ++ relocatedPaths);
     pkgs.runCommand "navdio-nixos-module"
     {
       nativeBuildInputs = [

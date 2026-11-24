@@ -132,6 +132,8 @@ class IntegrationTests(unittest.TestCase):
                 port = listener.getsockname()[1]
                 nd_port = free_port()
                 origin, nd_origin = f"http://127.0.0.1:{port}", f"http://127.0.0.1:{nd_port}"
+                working_directory = root / "navidrome"
+                working_directory.mkdir()
                 credentials = root / "credentials"
                 credentials.mkdir(mode=0o700)
                 token_file = credentials / "event-token"
@@ -161,6 +163,7 @@ class IntegrationTests(unittest.TestCase):
                             "Address": "127.0.0.1",
                             "Port": nd_port,
                             "DataFolder": str(root / "data"),
+                            "DbPath": "./navidrome.db",
                             "MusicFolder": str(music),
                             "CacheFolder": str(root / "cache"),
                             "LogLevel": "error",
@@ -193,6 +196,7 @@ class IntegrationTests(unittest.TestCase):
                         command,
                         stdout=log,
                         stderr=log,
+                        cwd=working_directory,
                         start_new_session=True,
                         pass_fds=() if inherited is None else (inherited.fileno(),),
                     )
@@ -261,9 +265,12 @@ class IntegrationTests(unittest.TestCase):
                         "broadcaster",
                         "[1]",
                     ],
+                    cwd=working_directory,
                     env={**os.environ, "CREDENTIALS_DIRECTORY": str(credentials)},
                     check=True,
                 )
+                self.assertTrue((working_directory / "navidrome.db").is_file())
+                self.assertFalse((root / "data" / "navidrome.db").exists())
                 server = launch([navidrome, "--configfile", str(nd_config)], "server.log")
                 eventually(lambda: request(nd_origin + "/ping"), "enabled-plugin startup")
 

@@ -100,6 +100,7 @@ Navidrome runs only while `navdio.socket` is active.
 Plugin provisioning can fail without stopping Navidrome while that socket remains active.
 The companion rejects reports outside the configured user and player selection, even if the plugin still has old settings.
 Fix the prerequisites, then restart Navidrome to apply the plugin settings.
+Provisioning uses Navidrome's working directory to resolve a relative `DbPath`, even when `DataFolder` moves.
 The module does not create Navidrome users, change authentication, open firewall ports, or configure a public proxy.
 
 For upgrades from direct binding, stop Navidrome before enabling the socket.

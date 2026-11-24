@@ -32,11 +32,10 @@
     companionUrl = "http://127.0.0.1:${toString cfg.port}";
   };
   serverConfig = json.generate "navdio-navidrome.json" navidrome.settings;
-  dataDirectory = navidrome.settings.DataFolder or "/var/lib/navidrome";
+  navidromeService = config.systemd.services.navidrome.serviceConfig;
   writableNavidromePaths =
-    [
-      dataDirectory
-    ]
+    lib.optional (navidromeService.WorkingDirectory != "/") navidromeService.WorkingDirectory
+    ++ lib.optional (navidrome.settings ? DataFolder) navidrome.settings.DataFolder
     ++ lib.optional (navidrome.settings ? CacheFolder) navidrome.settings.CacheFolder
     ++ lib.optional (navidrome.settings ? Backup.Path) navidrome.settings.Backup.Path;
 in {
@@ -268,9 +267,14 @@ in {
       environment.ND_LOGLEVEL = "error";
       serviceConfig = {
         Type = "oneshot";
-        User = navidrome.user;
-        Group = navidrome.group;
-        WorkingDirectory = dataDirectory;
+        inherit (navidromeService) User Group WorkingDirectory;
+        # The provisioner can run before Navidrome creates its state directory.
+        StateDirectory = lib.mkIf (navidromeService ? StateDirectory) navidromeService.StateDirectory;
+        StateDirectoryMode =
+          lib.mkIf (
+            navidromeService ? StateDirectoryMode
+          )
+          navidromeService.StateDirectoryMode;
         EnvironmentFile = lib.mkIf (navidrome.environmentFile != null) [
           navidrome.environmentFile
         ];
