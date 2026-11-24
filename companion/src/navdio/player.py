@@ -1,6 +1,7 @@
 """One MPD process and one non-drifting playback policy."""
 
 import fcntl
+import logging
 import math
 import os
 import shutil
@@ -15,7 +16,9 @@ from typing import BinaryIO
 from mpd import MPDClient, MPDError
 
 from .config import MPD_AUDIO_SOCKET, MPD_CONTROL_SOCKET, Config, RadioError
-from .state import Observation
+from .state import Observation, Track
+
+LOGGER = logging.getLogger(__name__)
 
 
 class PlayerError(RadioError):
@@ -68,6 +71,7 @@ class Player:
         self.source_file: BinaryIO | None = None
         self.source_link: Path | None = None
         self.loaded_key = None
+        self.rejected_track: Track | None = None
         self.policy = SyncPolicy()
 
     def _runtime(self):
@@ -204,19 +208,34 @@ audio_output {{
                 self.source_file = None
             self.loaded_key = None
 
-    def _load_track(self, track):
-        path = Path(track.path)
+    def _open_track(self, path: Path) -> BinaryIO | None:
         if any(char in str(path) for char in "\r\n\x00"):
-            raise PlayerError("Track is no longer available in its library")
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
-        source = os.fdopen(fd, "rb")
-        link = self.config.runtime_directory / ("track" + path.suffix)
+            return None
         try:
-            opened_path = Path(f"/proc/self/fd/{source.fileno()}").resolve(strict=True)
-            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode) or not any(
-                opened_path.is_relative_to(root) for root in self.config.libraries.values()
-            ):
-                raise PlayerError("Track is no longer available in its library")
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError:
+            return None
+        source = None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            opened_path = Path(f"/proc/self/fd/{fd}").resolve(strict=True)
+            if not any(opened_path.is_relative_to(root) for root in self.config.libraries.values()):
+                return None
+            source = os.fdopen(fd, "rb")
+            return source
+        except (OSError, RuntimeError):
+            return None
+        finally:
+            if source is None:
+                os.close(fd)
+
+    def _load_track(self, track: Track) -> bool:
+        source = self._open_track(track.path)
+        if source is None:
+            return False
+        link = self.config.runtime_directory / ("track" + track.path.suffix)
+        try:
             self.client.clear()
             self._close_track()
             # Keep the validated inode open. The private link preserves its decoder suffix.
@@ -231,9 +250,13 @@ audio_output {{
             raise
         self.source_file = source
         self.loaded_key = track.key
+        return True
 
     def apply(self, observation):
         status = self.status()
+        # Each report supplies a new Track. Do not reopen a rejected report on each tick.
+        if self.rejected_track is not None and observation.track is self.rejected_track:
+            observation = Observation()
         position = int(float(status.get("elapsed", 0)) * 1000)
         if (
             status["state"] == "stop"
@@ -241,9 +264,15 @@ audio_output {{
             and self.loaded_key == observation.track.key
         ):
             position = observation.track.duration_ms or position
-        result, restart = self.policy.update(observation, position, self.clock())
+        now = self.clock()
+        result, restart = self.policy.update(observation, position, now)
         changed = False
         try:
+            if restart and result.track is not None and self.loaded_key != result.track.key:
+                if not self._load_track(result.track):
+                    LOGGER.warning("Track is no longer available in its library")
+                    self.rejected_track = result.track
+                    result, _ = self.policy.update(Observation(), position, now)
             if result.track is None:
                 if status["state"] != "stop" or self.loaded_key is not None:
                     self.client.stop()
@@ -255,8 +284,6 @@ audio_output {{
                     self.client.pause(1)
                     changed = True
             elif restart:
-                if self.loaded_key != result.track.key:
-                    self._load_track(result.track)
                 self.client.seek(0, result.position_ms / 1000)
                 self.client.pause(0)
                 changed = True

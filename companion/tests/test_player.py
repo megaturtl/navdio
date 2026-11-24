@@ -6,12 +6,13 @@ import tempfile
 import time
 import unittest
 import wave
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from navdio.config import MPD_AUDIO_SOCKET, Config
 from navdio.player import Player, PlayerError, SyncPolicy
-from navdio.state import Observation, Track
+from navdio.state import Observation, PlaybackEvent, RadioState, Track
 
 
 class PolicyTests(unittest.TestCase):
@@ -134,15 +135,17 @@ class PlayerTests(unittest.TestCase):
             outside.write_bytes(b"outside-library audio")
             self.song.unlink()
             self.song.symlink_to(outside)
-            with self.assertRaises(PlayerError):
-                self.player.apply(Observation("playing", 0, 100, self.track))
+            self.assertEqual(
+                self.player.apply(Observation("playing", 0, 100, self.track)).state, "idle"
+            )
             self.client.add.assert_not_called()
 
     def test_nonregular_track_does_not_block_or_reach_mpd(self):
         self.song.unlink()
         os.mkfifo(self.song)
-        with self.assertRaises(PlayerError):
-            self.player.apply(Observation("playing", 0, 100, self.track))
+        self.assertEqual(
+            self.player.apply(Observation("playing", 0, 100, self.track)).state, "idle"
+        )
         self.client.add.assert_not_called()
 
 
@@ -208,8 +211,16 @@ class RealMPDTests(unittest.TestCase):
                 self.assertTrue(data.startswith(b"OggS"))
                 self.assertIn(b"OpusHead", data)
                 self.assertGreaterEqual(data.count(b"OggS"), 3)
-                response.close()
-                track = Track(("song",), song, "Title", (), None, 6000)
+                state = RadioState()
+                session = ("test-broadcaster", "test-player")
+                track = Track((*session, "song"), song, "First track", (), None, 6000, b"cover")
+                report = PlaybackEvent(session, 1, "playing", 2000, 1, track)
+
+                def render():
+                    desired, revision = state.desired()
+                    state.publish(player.apply(desired), revision)
+
+                state.accept(report)
                 clear = player.client.clear
 
                 def replace_song():
@@ -218,13 +229,42 @@ class RealMPDTests(unittest.TestCase):
                     song.symlink_to(outside)
 
                 with patch.object(player.client, "clear", side_effect=replace_song):
-                    player.apply(Observation("playing", 2000, time.monotonic(), track))
+                    render()
                 status = player.status()
                 self.assertEqual(status["state"], "play")
                 self.assertAlmostEqual(float(status["duration"]), 6, delta=0.1)
                 elapsed = float(status["elapsed"])
                 self.assertGreaterEqual(elapsed, 1.5)
                 self.assertLess(elapsed, 3)
+
+                next_path = music / "next.wav"
+                shutil.copyfile(outside, next_path)
+                next_track = Track((*session, "next"), next_path, "Next track", (), None, 1000)
+                next_report = replace(report, timestamp=2, position_ms=0, track=next_track)
+                state.accept(next_report)
+                next_path.unlink()
+                with self.assertLogs("navdio.player", level="WARNING"):
+                    render()
+                self.assertEqual(player.status()["state"], "stop")
+                self.assertEqual(state.info()["state"], "idle")
+                self.assertEqual(state.info()["title"], "First track")
+                self.assertEqual(state.info()["lastPlayedAt"], 1)
+                self.assertEqual(state.cover(), (track.cover_version, track.cover))
+                self.assertTrue(response.read1(8192), "Listener disconnected during recovery")
+
+                shutil.copyfile(outside, next_path)
+                render()
+                self.assertEqual(player.status()["state"], "stop")
+                state.accept(replace(next_report, timestamp=3, track=replace(next_track)))
+                render()
+                self.assertEqual(player.status()["state"], "play")
+                self.assertEqual(state.info()["title"], "Next track")
+                response.close()
+
+                process.terminate()
+                process.wait(timeout=5)
+                with self.assertRaisesRegex(PlayerError, "MPD stopped"):
+                    render()
             finally:
                 if source is not None:
                     source.close()

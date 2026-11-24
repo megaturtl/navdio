@@ -167,6 +167,8 @@ Idle traffic is small, not zero.
 Without listeners, Navdio sends no audio, but MPD's encoder can remain active.
 A plugin heartbeat detects source loss without requiring frequent client reports.
 When source liveness expires, playback becomes idle. The last played metadata and cover remain available.
+If a reported file disappears before MPD opens it, the radio goes idle without disconnecting listeners.
+Info and cover retain the last played track. A new playback report can resume the broadcast.
 
 MPD reads ReplayGain tags from the files. Missing tags leave gain unchanged.
 Navdio does not submit plays or scrobbles.
